@@ -14,12 +14,12 @@ pub fn load(input: File) -> ParseProto {
     let mut lex = Lex::new(input);
 
     loop {
-        match lex.do_next() {
+        match lex.next() {
             Token::Name(name) => {
                 constants.push(Value::String(name));
                 byte_codes.push(ByteCode::GetGlobal(0, (constants.len() - 1) as u8));
 
-                if let Token::String(s) = lex.do_next() {
+                if let Token::String(s) = lex.next() {
                     constants.push(Value::String(s));
                     byte_codes.push(ByteCode::LoadConst(1, (constants.len() - 1) as u8));
                     byte_codes.push(ByteCode::Call(0, 1));
