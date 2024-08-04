@@ -1,6 +1,8 @@
 use std::env;
 use std::fs::File;
 
+use parse::ParseProto;
+
 mod value;
 mod bytecode;
 mod lex;
@@ -17,6 +19,7 @@ fn main() {
 
     let file = File::open(&args[1]).unwrap();
 
-    let proto = parse::load(file);
+
+    let proto = ParseProto::load(file);
     vm::ExeState::new().execute(&proto);
 }

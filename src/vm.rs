@@ -1,17 +1,17 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::DebugList, mem};
 
 use crate::{bytecode::ByteCode, parse::ParseProto, value::Value};
 
-
 fn lib_print(state: &mut ExeState) -> i32 {
-    println!("{:?}", state.stack[1]);
+    println!("{:?}", state.stack[state.func_index + 1]);
     0
 }
 
 #[derive(Debug)]
 pub struct ExeState {
-    globals: HashMap<String, Value>,
-    stack: Vec<Value>,
+    pub globals: HashMap<String, Value>,
+    pub stack: Vec<Value>,
+    pub func_index: usize,
 }
 
 impl ExeState {
@@ -22,6 +22,7 @@ impl ExeState {
         ExeState {
             globals,
             stack: Vec::new(),
+            func_index: 0,
         }
     }
 
@@ -37,12 +38,52 @@ impl ExeState {
                         panic!("invalid global key: {name:?}");
                     }
                 }
+                ByteCode::SetGlobal(dst, src) => {
+                    let name = proto.constants[dst as usize].clone();
+                    if let Value::String(key) = name {
+                        let new_value = self.stack[src as usize].clone();
+                        self.globals.insert(key, new_value);
+                    } else {
+                        panic!("invalid global key: {name:?}");
+                    }
+                }
+                ByteCode::SetGlobalConst(dst, src) => {
+                    let name = proto.constants[dst as usize].clone();
+                    if let Value::String(key) = name {
+                        let new_value = proto.constants[src as usize].clone();
+                        self.globals.insert(key, new_value);
+                    } else {
+                        panic!("invalid global key: {name:?}");
+                    }
+                }
+                ByteCode::SetGlobalGlobal(dst, src) => {
+                    let name = proto.constants[dst as usize].clone();
+                    if let Value::String(key) = name {
+                        let src = &proto.constants[src as usize];
+                        if let Value::String(src) = src {
+                            let new_value = self.globals.get(src).unwrap_or(&Value::Nil).clone();
+                            self.globals.insert(key, new_value);
+                        } else {
+                            panic!("invalid global key: {src:?}");
+                        }
+                    } else {
+                        panic!("invalid global key: {name:?}");
+                    }
+                }
                 ByteCode::LoadConst(dst, idx) => {
                     let value = proto.constants[idx as usize].clone();
                     self.set_stack(dst, value);
                 }
+                ByteCode::LoadNil(dst) => self.set_stack(dst, Value::Nil),
+                ByteCode::LoadBool(dst, b) => self.set_stack(dst, Value::Boolean(b)),
+                ByteCode::LoadInt(dst, i) => self.set_stack(dst, Value::Integer(i as i64)),
+                ByteCode::Move(dst, src) => {
+                    let value = self.stack[src as usize].clone();
+                    self.set_stack(dst, value);
+                }
                 ByteCode::Call(func, _) => {
-                    let func = &self.stack[func as usize];
+                    self.func_index = func as usize;
+                    let func = &self.stack[self.func_index];
                     if let Value::Function(f) = func {
                         f(self);
                     } else {
@@ -50,10 +91,13 @@ impl ExeState {
                     }
                 }
             }
+            // println!("");
+            // println!("{:?}", code);
+            // dbg!(&self.stack);
         }
     }
 
     pub fn set_stack(&mut self, dst: u8, value: Value) {
         self.stack.insert(dst as usize, value);
-    } 
+    }
 }
