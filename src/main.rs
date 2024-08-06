@@ -1,5 +1,6 @@
 use std::env;
 use std::fs::File;
+use std::io::BufReader;
 
 use parse::ParseProto;
 
@@ -17,9 +18,13 @@ fn main() {
         return;
     }
 
+    // let stdin = std::io::stdin();
+    // let proto = ParseProto::load(stdin);
+    // let input = std::io::Cursor::new("print \"i am from string!\"");  // 字符串+Cursor
+    // let proto = ParseProto::load(input);
+
     let file = File::open(&args[1]).unwrap();
-
-
-    let proto = ParseProto::load(file);
+    let input = BufReader::new(file);
+    let proto = ParseProto::load(input);
     vm::ExeState::new().execute(&proto);
 }

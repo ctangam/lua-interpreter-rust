@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::DebugList, mem};
+use std::{collections::HashMap, io::Read};
 
 use crate::{bytecode::ByteCode, parse::ParseProto, value::Value};
 
@@ -26,49 +26,29 @@ impl ExeState {
         }
     }
 
-    pub fn execute(&mut self, proto: &ParseProto) {
+    pub fn execute<R: Read>(&mut self, proto: &ParseProto<R>) {
         for code in proto.byte_codes.iter() {
             match *code {
                 ByteCode::GetGlobal(dst, idx) => {
-                    let name = &proto.constants[idx as usize];
-                    if let Value::String(key) = name {
-                        let v = self.globals.get(key).unwrap_or(&Value::Nil).clone();
-                        self.set_stack(dst, v);
-                    } else {
-                        panic!("invalid global key: {name:?}");
-                    }
+                    let key: &str = (&proto.constants[idx as usize]).into();
+                    let v = self.globals.get(key).unwrap_or(&Value::Nil).clone();
+                    self.set_stack(dst, v);
                 }
                 ByteCode::SetGlobal(dst, src) => {
-                    let name = proto.constants[dst as usize].clone();
-                    if let Value::String(key) = name {
-                        let new_value = self.stack[src as usize].clone();
-                        self.globals.insert(key, new_value);
-                    } else {
-                        panic!("invalid global key: {name:?}");
-                    }
+                    let key = &proto.constants[dst as usize];
+                    let new_value = self.stack[src as usize].clone();
+                    self.globals.insert(key.into(), new_value);
                 }
                 ByteCode::SetGlobalConst(dst, src) => {
-                    let name = proto.constants[dst as usize].clone();
-                    if let Value::String(key) = name {
-                        let new_value = proto.constants[src as usize].clone();
-                        self.globals.insert(key, new_value);
-                    } else {
-                        panic!("invalid global key: {name:?}");
-                    }
+                    let key = &proto.constants[dst as usize];
+                    let new_value = proto.constants[src as usize].clone();
+                    self.globals.insert(key.into(), new_value);
                 }
                 ByteCode::SetGlobalGlobal(dst, src) => {
-                    let name = proto.constants[dst as usize].clone();
-                    if let Value::String(key) = name {
-                        let src = &proto.constants[src as usize];
-                        if let Value::String(src) = src {
-                            let new_value = self.globals.get(src).unwrap_or(&Value::Nil).clone();
-                            self.globals.insert(key, new_value);
-                        } else {
-                            panic!("invalid global key: {src:?}");
-                        }
-                    } else {
-                        panic!("invalid global key: {name:?}");
-                    }
+                    let key = &proto.constants[dst as usize];
+                    let src: &str = (&proto.constants[src as usize]).into();
+                    let new_value = self.globals.get(src).unwrap_or(&Value::Nil).clone();
+                    self.globals.insert(key.into(), new_value);
                 }
                 ByteCode::LoadConst(dst, idx) => {
                     let value = proto.constants[idx as usize].clone();
