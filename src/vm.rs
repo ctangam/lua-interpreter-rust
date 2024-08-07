@@ -1,6 +1,6 @@
-use std::{collections::HashMap, io::Read};
+use std::{cell::RefCell, collections::HashMap, io::Read, rc::Rc};
 
-use crate::{bytecode::ByteCode, parse::ParseProto, value::Value};
+use crate::{bytecode::ByteCode, parse::ParseProto, value::{Table, Value}};
 
 fn lib_print(state: &mut ExeState) -> i32 {
     println!("{:?}", state.stack[state.func_index + 1]);
@@ -70,10 +70,38 @@ impl ExeState {
                         panic!("invalid function: {func:?}");
                     }
                 }
+                ByteCode::NewTable(dst, narray, nmap) => {
+                    let table = Table::new(narray as usize, nmap as usize);
+                    self.set_stack(dst, Value::Table(Rc::new(RefCell::new(table))));
+                }
+                ByteCode::SetTable(table, key, value) => {
+                    let key = self.stack[key as usize].clone();
+                    let value = self.stack[value as usize].clone();
+                    if let Value::Table(table) = &self.stack[table as usize] {
+                        table.borrow_mut().map.insert(key, value);
+                    } else {
+                        panic!("invalid table: {table:?}");
+                    }
+                }
+                ByteCode::SetField(table, key, value) => {
+                    let key = proto.constants[key as usize].clone();
+                    let value = self.stack[value as usize].clone();
+                    if let Value::Table(table) = &self.stack[table as usize] {
+                        table.borrow_mut().map.insert(key, value);
+                    } else {
+                        panic!("invalid table: {table:?}");
+                    }
+                }
+                ByteCode::SetList(table, n) => {
+                    let ivalue = table as usize + 1;
+                    if let Value::Table(table) = self.stack[table as usize].clone() {
+                        let values = self.stack.drain(ivalue..ivalue + n as usize);
+                        table.borrow_mut().array.extend(values);
+                    } else {
+                        panic!("invalid table: {table:?}");
+                    }
+                }
             }
-            // println!("");
-            // println!("{:?}", code);
-            // dbg!(&self.stack);
         }
     }
 

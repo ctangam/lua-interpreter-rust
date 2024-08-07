@@ -1,9 +1,23 @@
-use std::{fmt, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, hash::{Hash, Hasher}, mem, rc::Rc};
 
 use crate::vm::ExeState;
 
 const SHORT_STR_MAX: usize = 16 - 1 - 1;
 const MID_STR_MAX: usize = 48 - 1;
+
+pub struct Table {
+    pub array: Vec<Value>,
+    pub map: HashMap<Value, Value>,
+}
+
+impl Table {
+    pub fn new(narray: usize, nmap: usize) -> Self {
+        Table {
+            array: Vec::with_capacity(narray),
+            map: HashMap::with_capacity(nmap),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub enum Value{
@@ -14,7 +28,8 @@ pub enum Value{
     ShortStr(u8, [u8; SHORT_STR_MAX]),
     MidStr(Rc<(u8, [u8; MID_STR_MAX])>),
     LongStr(Rc<Vec<u8>>),
-    Function(fn (&mut ExeState) -> i32)
+    Function(fn (&mut ExeState) -> i32),
+    Table(Rc<RefCell<Table>>),
 }
 
 impl fmt::Debug for Value {
@@ -28,6 +43,19 @@ impl fmt::Debug for Value {
             Value::MidStr(s) => write!(f, "{}", String::from_utf8_lossy(&s.1[..s.0 as usize])),
             Value::LongStr(s) => write!(f, "{}", String::from_utf8_lossy(&s)),
             Value::Function(_) => write!(f, "function"),
+            Value::Table(t) => {
+                let t = t.borrow();
+                write!(f, "table:{}:{}", t.array.len(), t.map.len())
+            }
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        match self {
+            Value::Table(t) => write!(f, "table: {:?}", Rc::as_ptr(t)),
+            _ => write!(f, "{:?}", self),
         }
     }
 }
@@ -132,5 +160,26 @@ impl<'a> From<&'a Value> for &'a str {
 impl From<&Value> for String {
     fn from(value: &Value) -> Self {
         String::from_utf8_lossy(value.into()).to_string()
+    }
+}
+
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Nil => (),
+            Value::Boolean(b) => b.hash(state),
+            Value::Integer(i) => i.hash(state),
+            Value::Float(f) => // TODO try to convert to integer
+                unsafe {
+                    mem::transmute::<f64, i64>(*f).hash(state)
+                }
+            Value::ShortStr(len, buf) => buf[..*len as usize].hash(state),
+            Value::MidStr(s) => s.1[..s.0 as usize].hash(state),
+            Value::LongStr(s) => s.hash(state),
+            Value::Table(t) => Rc::as_ptr(t).hash(state),
+            Value::Function(f) => (*f as *const usize).hash(state),
+        }
     }
 }

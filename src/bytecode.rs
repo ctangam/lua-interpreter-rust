@@ -10,4 +10,8 @@ pub enum ByteCode {
     LoadInt(u8, i16),
     Move(u8, u8),
     Call(u8, u8),
+    NewTable(u8, u8, u8),
+    SetTable(u8, u8, u8),
+    SetField(u8, u8, u8),
+    SetList(u8, u8),
 }

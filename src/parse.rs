@@ -105,6 +105,7 @@ impl<R: Read> ParseProto<R> {
                 let code = self.load_const(iarg, s.into());
                 self.byte_codes.push(code);
             }
+            Token::CurlyL => self.table_constructor(iarg),
             _ => panic!("expected string"),
         }
         self.byte_codes.push(ByteCode::Call(ifunc as u8, 1))
@@ -122,6 +123,80 @@ impl<R: Read> ParseProto<R> {
         let dst: usize = self.locals.len();
         self.load_expr(dst);
         self.locals.push(var);
+    }
+
+    fn table_constructor(&mut self, dst: usize) {
+        let table = dst as u8;
+        let inew = self.byte_codes.len();
+        self.byte_codes.push(ByteCode::NewTable(table, 0, 0));
+
+        let mut narray = 0;
+        let mut nmap = 0;
+        let mut sp = dst + 1;
+        loop {
+            match self.lex.peek() {
+                Token::CurlyR => {
+                    self.lex.next();
+                    break;
+                },
+                Token::SqurL => { // `[` exp `]` `=` exp，通用式
+                    nmap += 1;
+                    self.lex.next();
+                    
+                    self.load_expr(sp);
+                    self.lex.expect(Token::SqurR);
+                    self.lex.expect(Token::Assign);
+                    self.load_expr(sp + 1);
+
+                    self.byte_codes.push(ByteCode::SetTable(table, sp as u8, sp as u8 + 1))
+                },
+                Token::Name(_) => { // Name `=` exp | Name
+                    nmap += 1;
+                    let name = if let Token::Name(name) = self.lex.next() {
+                        name
+                    } else {
+                        unreachable!()
+                    };
+                    if self.lex.peek() == &Token::Assign {
+                        self.lex.next();
+                        let key = self.add_const(name) as u8;
+                        self.load_expr(sp);
+                        self.byte_codes.push(ByteCode::SetField(table, key, sp as u8));
+                    } else {
+                        narray += 1;
+                        let code = self.load_var(sp, name);
+                        self.byte_codes.push(code);
+    
+                        sp += 1;
+                        if sp - (dst + 1) > 50 {
+                            self.byte_codes.push(ByteCode::SetList(table, (sp - (dst + 1)) as u8));
+                            sp = dst + 1;
+                        }
+                    }
+                },
+                _ => {
+                    narray += 1;
+                    self.load_expr(sp);
+
+                    sp += 1;
+                    if sp - (dst + 1) > 50 {
+                        self.byte_codes.push(ByteCode::SetList(table, (sp - (dst + 1)) as u8));
+                        sp = dst + 1;
+                    }
+                },
+            }
+
+            match self.lex.next() {
+                Token::SemiColon | Token::Comma => (),
+                Token::CurlyR => break,
+                t => panic!("invalid table {t:?}"),
+            }
+        }
+        if sp > dst + 1 {
+            self.byte_codes.push(ByteCode::SetList(table, (sp - (dst + 1)) as u8));
+        }
+
+        self.byte_codes[inew] = ByteCode::NewTable(table, narray, nmap);
     }
 
     fn load_expr(&mut self, dst: usize) {

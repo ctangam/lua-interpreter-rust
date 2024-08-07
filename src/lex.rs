@@ -52,6 +52,10 @@ impl<R: Read> Lex<R> {
         }
     }
 
+    pub fn expect(&mut self, token: Token) {
+        assert_eq!(self.next(), token);
+    }
+
     pub fn peek(&mut self) -> &Token {
         if self.ahead == Token::Eos {
             self.ahead = self.do_next();
