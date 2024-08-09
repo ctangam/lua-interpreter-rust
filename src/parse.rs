@@ -186,6 +186,22 @@ impl<R: Read> ParseProto<R> {
         self.byte_codes.push(code);
     }
 
+    fn explist(&mut self) -> usize {
+        let mut n = 0;
+        let sp0 = self.sp;
+        loop {
+            let desc = self.exp();
+            self.discharge(sp0 + n, desc);
+            n += 1;
+
+            if self.lex.peek() != &Token::Comma {
+                return n;
+            }
+
+            self.lex.next();
+        }
+    }
+
     fn prefixexp(&mut self, ahead: Token) -> ExpDesc {
         let sp0 = self.sp;
 
@@ -236,10 +252,6 @@ impl<R: Read> ParseProto<R> {
         todo!()
     }
 
-    fn explist(&mut self) -> usize {
-        todo!("exp list")
-    }
-
     fn exp(&mut self) -> ExpDesc {
         let ahead = self.lex.next();
         self.exp_with_ahead(ahead)
@@ -253,8 +265,10 @@ impl<R: Read> ParseProto<R> {
             Token::Integer(i) => ExpDesc::Integer(i),
             Token::Float(f) => ExpDesc::Float(f),
             Token::String(s) => ExpDesc::String(s),
-            Token::Name(var) => self.simple_name(&var),
+            Token::Function => todo!("function"),
             Token::CurlyL => self.table_constructor(),
+            Token::Sub | Token::Not | Token::BitXor | Token::Len => todo!("unary op"),
+            Token::Dots => todo!("dots"),
             t => panic!("invalid exp: {:?}", t),
         }
     }
