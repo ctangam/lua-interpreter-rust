@@ -1,9 +1,9 @@
-use std::io::Read;
+use std::{cmp::Ordering, io::Read};
 
 use crate::{
     bytecode::ByteCode,
     lex::{Lex, Token},
-    value::Value,
+    value::{self, Value},
 };
 
 #[derive(Debug, PartialEq)]
@@ -18,6 +18,7 @@ enum ExpDesc {
     IndexField(usize, usize),
     IndexInt(usize, u8),
     Index(usize, usize),
+    Call,
 }
 
 enum ConstStack {
@@ -35,6 +36,137 @@ pub struct ParseProto<R: Read> {
 }
 
 impl<R: Read> ParseProto<R> {
+    pub fn load(input: R) -> Self {
+        let mut proto = ParseProto {
+            constants: Vec::new(),
+            byte_codes: Vec::new(),
+            locals: Vec::new(),
+            lex: Lex::new(input),
+            sp: 0,
+        };
+        proto.chunk();
+
+        println!("constants: {:?}", &proto.constants);
+        println!("byte_codes:");
+        for c in proto.byte_codes.iter() {
+            println!("  {:?}", c);
+        }
+
+        proto
+    }
+
+    fn chunk(&mut self) {
+        self.block()
+    }
+
+    fn block(&mut self) {
+        loop {
+            self.sp = self.locals.len();
+
+            match self.lex.next() {
+                Token::SemiColon => (),
+                t @ Token::Name(_) | t @ Token::ParL => {
+                    let desc = self.prefixexp(t);
+                    if desc == ExpDesc::Call {
+                    } else {
+                        self.assign(desc);
+                    }
+                }
+                Token::Local => self.local(),
+                Token::Eos => break,
+                t => panic!("invalid block: {:?}", t),
+            }
+        }
+    }
+
+    fn local(&mut self) {
+        let mut vars = Vec::new();
+        let nexp = loop {
+            vars.push(self.read_name());
+
+            match self.lex.peek() {
+                Token::Comma => {
+                    self.lex.next();
+                }
+                Token::Assign => {
+                    self.lex.next();
+                    break self.explist();
+                }
+                _ => break 0,
+            }
+        };
+
+        if nexp < vars.len() {
+            let ivar = self.locals.len() + nexp;
+            let nnil = vars.len() - nexp;
+            self.byte_codes
+                .push(ByteCode::LoadNil(ivar as u8, nnil as u8));
+        }
+
+        self.locals.append(&mut vars)
+    }
+
+    fn assign(&mut self, first_var: ExpDesc) {
+        let mut vars = vec![first_var];
+        loop {
+            match self.lex.next() {
+                Token::Comma => {
+                    let token = self.lex.next();
+                    vars.push(self.prefixexp(token));
+                }
+                Token::Assign => break,
+                t => panic!("invalid assign: {:?}", t),
+            }
+        }
+
+        let exp_sp0 = self.sp;
+        let mut nfexp = 0;
+        let last_exp = loop {
+            let desc = self.exp();
+
+            if self.lex.peek() == &Token::Comma {
+                self.lex.next();
+                self.discharge(exp_sp0 + nfexp, desc);
+                nfexp += 1;
+            } else {
+                break desc;
+            }
+        };
+
+        match (nfexp + 1).cmp(&vars.len()) {
+            Ordering::Equal => {
+                let last_var = vars.pop().unwrap();
+                self.assign_var(last_var, last_exp);
+            }
+            Ordering::Less => todo!("expand last exps"),
+            Ordering::Greater => {
+                nfexp = vars.len();
+            }
+        }
+
+        while let Some(var) = vars.pop() {
+            nfexp -= 1;
+            self.assign_from_stack(var, exp_sp0 + nfexp);
+        }
+    }
+
+    fn assign_var(&mut self, var: ExpDesc, value: ExpDesc) {
+        if let ExpDesc::Local(ivar) = var {
+            self.discharge(ivar, value);
+        } else {
+            match self.discharge_const(value) {
+                ConstStack::Const(i) => self.assign_from_const(var, i),
+                ConstStack::Stack(i) => self.assign_from_stack(var, i),
+            }
+        }
+    }
+
+    fn assign_from_stack(&mut self, var: ExpDesc, value: usize) {
+        
+    }
+
+    fn assign_from_const(&mut self, var: ExpDesc, value: usize) {}
+
     fn prefixexp(&mut self, ahead: Token) -> ExpDesc {
         let sp0 = self.sp;
 
@@ -85,6 +217,10 @@ impl<R: Read> ParseProto<R> {
         todo!()
     }
 
+    fn explist(&mut self) -> usize {
+        todo!("exp list")
+    }
+
     fn exp(&mut self) -> ExpDesc {
         let ahead = self.lex.next();
         self.exp_with_ahead(ahead)
@@ -115,7 +251,7 @@ impl<R: Read> ParseProto<R> {
 
     fn discharge(&mut self, dst: usize, desc: ExpDesc) {
         let code = match desc {
-            ExpDesc::Nil => ByteCode::LoadNil(dst as u8),
+            ExpDesc::Nil => ByteCode::LoadNil(dst as u8, 1),
             ExpDesc::Boolean(b) => ByteCode::LoadBool(dst as u8, b),
             ExpDesc::Integer(i) => {
                 if let Ok(i) = i16::try_from(i) {
@@ -137,6 +273,7 @@ impl<R: Read> ParseProto<R> {
             ExpDesc::IndexField(itable, ikey) => ByteCode::GetField(dst as u8, itable as u8, ikey as u8),
             ExpDesc::IndexInt(itable, ikey) => ByteCode::GetInt(dst as u8, itable as u8, ikey),
             ExpDesc::Index(itable, ikey) => ByteCode::GetTable(dst as u8, itable as u8, ikey as u8),
+            ExpDesc::Call => todo!("discharge Call"),
         };
         self.byte_codes.push(code);
         self.sp = dst + 1;
@@ -179,80 +316,6 @@ impl<R: Read> ParseProto<R> {
         self.discharge(sp0, desc);
     }
 
-    pub fn load(input: R) -> Self {
-        let mut proto = ParseProto {
-            constants: Vec::new(),
-            byte_codes: Vec::new(),
-            locals: Vec::new(),
-            lex: Lex::new(input),
-            sp: 0,
-        };
-
-        proto.chunk();
-
-        println!("constants: {:?}", &proto.constants);
-        println!("byte_codes:");
-        for c in proto.byte_codes.iter() {
-            println!("	{:?}", c);
-        }
-
-        proto
-    }
-
-    fn chunk(&mut self) {
-        loop {
-            match self.lex.next() {
-                Token::Name(name) => {
-                    if self.lex.peek() == &Token::Assign {
-                        self.assign(name);
-                    } else {
-                        self.func_call(name);
-                    }
-                }
-                Token::Local => self.local(),
-                Token::Eos => break,
-                t => panic!("unexpected token: {t:?}"),
-            }
-        }
-    }
-
-    fn assign(&mut self, var: String) {
-        self.lex.next();
-
-        if let Some(i) = self.get_local(&var) {
-            // local =
-            self.load_expr(i);
-        } else {
-            // global =
-            let dst = self.add_const(var) as u8;
-
-            let code = match self.lex.next() {
-                // from const values
-                Token::Nil => ByteCode::SetGlobalConst(dst, self.add_const(Value::Nil) as u8),
-                Token::True => ByteCode::SetGlobalConst(dst, self.add_const(true) as u8),
-                Token::False => ByteCode::SetGlobalConst(dst, self.add_const(false) as u8),
-                Token::Integer(i) => ByteCode::SetGlobalConst(dst, self.add_const(i) as u8),
-                Token::Float(f) => ByteCode::SetGlobalConst(dst, self.add_const(f) as u8),
-                Token::String(s) => ByteCode::SetGlobalConst(dst, self.add_const(s) as u8),
-
-                // from variable
-                Token::Name(var) => {
-                    if let Some(src) = self.get_local(&var) {
-                        // local variable
-                        ByteCode::SetGlobal(dst, src as u8)
-                    } else {
-                        // global variable
-                        ByteCode::SetGlobalGlobal(dst, self.add_const(var) as u8)
-                    }
-                }
-
-                _ => panic!("invalid argument"),
-            };
-
-            self.byte_codes.push(code);
-        }
-    }
-
     fn func_call(&mut self, name: String) {
         let ifunc = self.locals.len();
         let iarg = ifunc + 1;
@@ -274,20 +337,6 @@ impl<R: Read> ParseProto<R> {
             _ => panic!("expected string"),
         }
         self.byte_codes.push(ByteCode::Call(ifunc as u8, 1))
-    }
-
-    fn local(&mut self) {
-        let var = if let Token::Name(var) = self.lex.next() {
-            var
-        } else {
-            panic!("expected variable")
-        };
-        if self.lex.next() != Token::Assign {
-            panic!("expected '='")
-        }
-        let dst: usize = self.locals.len();
-        self.load_expr(dst);
-        self.locals.push(var);
     }
 
     fn table_constructor(&mut self) -> ExpDesc {
@@ -434,7 +483,7 @@ impl<R: Read> ParseProto<R> {
 
     fn load_expr(&mut self, dst: usize) {
         let code = match self.lex.next() {
-            Token::Nil => ByteCode::LoadNil(dst as u8),
+            Token::Nil => ByteCode::LoadNil(dst as u8, 1),
             Token::True => ByteCode::LoadBool(dst as u8, true),
             Token::False => ByteCode::LoadBool(dst as u8, false),
             Token::Integer(i) => {
