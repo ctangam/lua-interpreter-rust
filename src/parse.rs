@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, io::Read};
+use std::{cmp::Ordering, collections::btree_map::Keys, io::Read};
 
 use crate::{
     bytecode::ByteCode,
@@ -162,10 +162,29 @@ impl<R: Read> ParseProto<R> {
     }
 
     fn assign_from_stack(&mut self, var: ExpDesc, value: usize) {
-        
+        let code = match var {
+            ExpDesc::Local(i) => ByteCode::Move(i as u8, value as u8),
+            ExpDesc::Global(name) => ByteCode::SetGlobal(name as u8, value as u8),
+            ExpDesc::Index(t, key) => ByteCode::SetTable(t as u8, key as u8, value as u8),
+            ExpDesc::IndexField(t, key) => ByteCode::SetField(t as u8, key as u8, value as u8),
+            ExpDesc::IndexInt(t, key) => ByteCode::SetInt(t as u8, key, value as u8),
+            _ => panic!("assign from stack"),
+        };
+
+        self.byte_codes.push(code);
     }
 
-    fn assign_from_const(&mut self, var: ExpDesc, value: usize) {}
+    fn assign_from_const(&mut self, var: ExpDesc, value: usize) {
+        let code = match var {
+            ExpDesc::Global(name) => ByteCode::SetGlobalConst(name as u8, value as u8),
+            ExpDesc::Index(t, key) => ByteCode::SetTableConst(t as u8, key as u8, value as u8),
+            ExpDesc::IndexField(t, key) => ByteCode::SetFieldConst(t as u8, key as u8, value as u8),
+            ExpDesc::IndexInt(t, key) => ByteCode::SetIntConst(t as u8, key, value as u8),
+            _ => panic!("assign from stack"),
+        };
+
+        self.byte_codes.push(code);
+    }
 
     fn prefixexp(&mut self, ahead: Token) -> ExpDesc {
         let sp0 = self.sp;
