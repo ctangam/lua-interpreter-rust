@@ -101,6 +101,13 @@ impl ExeState {
                         panic!("invalid table: {table:?}");
                     }
                 }
+                ByteCode::SetInt(_, _, _) => todo!(),
+                ByteCode::SetTableConst(_, _, _) => todo!(),
+                ByteCode::SetFieldConst(_, _, _) => todo!(),
+                ByteCode::SetIntConst(_, _, _) => todo!(),
+                ByteCode::GetTable(_, _, _) => todo!(),
+                ByteCode::GetField(_, _, _) => todo!(),
+                ByteCode::GetInt(_, _, _) => todo!(),
             }
         }
     }
