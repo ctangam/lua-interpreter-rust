@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, io::Read, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap, io::Read, rc::Rc};
 
 use crate::{bytecode::ByteCode, parse::ParseProto, value::{Table, Value}};
 
@@ -39,15 +39,10 @@ impl ExeState {
                     let new_value = self.stack[src as usize].clone();
                     self.globals.insert(key.into(), new_value);
                 }
+
                 ByteCode::SetGlobalConst(dst, src) => {
                     let key = &proto.constants[dst as usize];
                     let new_value = proto.constants[src as usize].clone();
-                    self.globals.insert(key.into(), new_value);
-                }
-                ByteCode::SetGlobalGlobal(dst, src) => {
-                    let key = &proto.constants[dst as usize];
-                    let src: &str = (&proto.constants[src as usize]).into();
-                    let new_value = self.globals.get(src).unwrap_or(&Value::Nil).clone();
                     self.globals.insert(key.into(), new_value);
                 }
                 ByteCode::LoadConst(dst, idx) => {
@@ -116,7 +111,37 @@ impl ExeState {
         }
     }
 
-    pub fn set_stack(&mut self, dst: u8, value: Value) {
-        self.stack.insert(dst as usize, value);
+    fn set_stack(&mut self, dst: u8, value: Value) {
+        let dst = dst as usize;
+        match dst.cmp(&self.stack.len()) {
+            Ordering::Equal => self.stack.push(value),
+            Ordering::Less => self.stack[dst] = value,
+            Ordering::Greater => panic!("stack overflow"),
+        }
+    }
+
+    fn fill_stack(&mut self, begin: usize, num: usize) {
+        let end = begin + num;
+        let len = self.stack.len();
+        if begin < len {
+            self.stack[begin..len].fill(Value::Nil)
+        }
+        if end > len {
+            self.stack.resize(end, Value::Nil)
+        }
+    }
+
+    fn set_table(&mut self, table: u8, key: Value, value: Value) {
+        match &key {
+            Value::Integer(i) => self.set_table_int(table, *i, value),
+            _ => self.do_set_table(table, key, value),
+        }
+    }
+
+    fn set_table_int(&mut self, table: u8, key: i64, value: Value) {
+
+    }
+
+    fn do_set_table(&mut self, table: u8, key: Value, value: Value) {
     }
 }

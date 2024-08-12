@@ -59,12 +59,30 @@ impl<R: Read> ParseProto<R> {
         self.block()
     }
 
+    // BNF:
+    //   block ::= {stat} [retstat]
+    //   stat ::= `;` |
+    //     varlist `=` explist |
+    //     functioncall |
+    //     label |
+    //     break |
+    //     goto Name |
+    //     do block end |
+    //     while exp do block end |
+    //     repeat block until exp |
+    //     if exp then block {elseif exp then block} [else block] end |
+    //     for Name `=` exp `,` exp [`,` exp] do block end |
+    //     for namelist in explist do block end |
+    //     function funcname funcbody |
+    //     local function Name funcbody |
+    //     local attnamelist [`=` explist]
     fn block(&mut self) {
         loop {
             self.sp = self.locals.len();
 
             match self.lex.next() {
                 Token::SemiColon => (),
+
                 t @ Token::Name(_) | t @ Token::ParL => {
                     let desc = self.prefixexp(t);
                     if desc == ExpDesc::Call {
@@ -79,6 +97,9 @@ impl<R: Read> ParseProto<R> {
         }
     }
 
+    // BNF:
+    //   local attnamelist [`=` explist]
+    //   attnamelist ::=  Name attrib {`,` Name attrib}
     fn local(&mut self) {
         let mut vars = Vec::new();
         let nexp = loop {
@@ -106,6 +127,9 @@ impl<R: Read> ParseProto<R> {
         self.locals.append(&mut vars)
     }
 
+    // BNF:
+    //   varlist = explist
+    //   varlist ::= var {`,` var}
     fn assign(&mut self, first_var: ExpDesc) {
         let mut vars = vec![first_var];
         loop {
@@ -124,7 +148,7 @@ impl<R: Read> ParseProto<R> {
         let last_exp = loop {
             let desc = self.exp();
 
-            if self.lex.peek() == &Token::Comma {
+            if *self.lex.peek() == Token::Comma {
                 self.lex.next();
                 self.discharge(exp_sp0 + nfexp, desc);
                 nfexp += 1;
@@ -186,6 +210,7 @@ impl<R: Read> ParseProto<R> {
         self.byte_codes.push(code);
     }
 
+    // explist ::= exp {`,` exp}
     fn explist(&mut self) -> usize {
         let mut n = 0;
         let sp0 = self.sp;
@@ -202,6 +227,16 @@ impl<R: Read> ParseProto<R> {
         }
     }
 
+    // BNF:
+    //   exp ::= nil | false | true | Numeral | LiteralString | `...` | functiondef |
+    //           prefixexp | tableconstructor | exp binop exp | unop exp
+    //
+    // Remove left recursion:
+    //
+    //   exp ::= (nil | false | true | Numeral | LiteralString | `...` | functiondef |
+    //           prefixexp | tableconstructor | unop exp) A'
+    // where:
+    //   A' ::= binop exp A' | Epsilon
     fn exp(&mut self) -> ExpDesc {
         let ahead = self.lex.next();
         self.exp_with_ahead(ahead)
@@ -223,6 +258,36 @@ impl<R: Read> ParseProto<R> {
         }
     }
 
+    // BNF:
+    //   prefixexp ::= var | functioncall | `(` exp `)`
+    //   var ::=  Name | prefixexp `[` exp `]` | prefixexp `.` Name
+    //   functioncall ::=  prefixexp args | prefixexp `:` Name args
+    //
+    // We need to remove left recursion amount these 3 rules.
+    //
+    // First unfold 'var' and 'functioncall' in 'prefixexp' to remove indirect recursion:
+    //
+    //   prefixexp ::= Name | prefixexp `[` exp `]` | prefixexp `.` Name | prefixexp args | prefixexp `:` Name args | `(` exp `)`
+    //
+    // Then remove the direct left recursion following:
+    //   A ::= A alpha | beta
+    // into
+    //   A ::= beta A'
+    //   A' ::= alpha A' | Epsilon
+    //
+    // so
+    //   prefixexp ::= prefixexp (`[` exp `]` | `.` Name | args | `:` Name args) | Name | `(` exp `)`
+    //               = prefixexp alpha | beta
+    // where
+    //   alpha ::= `[` exp `]` | `.` Name | args | `:` Name args
+    //   beta ::= Name | `(` exp `)`
+    //
+    // Finally we get:
+    //   prefixexp ::= beta A'
+    //               = (Name | `(` exp `)`) A'
+    // where:
+    //   A' ::= alpha A' | Epsilon
+    //        = (`[` exp `]` | `.` Name | args | `:` Name args) A' | Epsilon
     fn prefixexp(&mut self, ahead: Token) -> ExpDesc {
         let sp0 = self.sp;
 
@@ -269,6 +334,7 @@ impl<R: Read> ParseProto<R> {
         }
     }
 
+    // args ::= `(` [explist] `)` | tableconstructor | LiteralString
     fn args(&mut self) -> ExpDesc {
         let ifunc = self.sp - 1;
         let argn = match self.lex.next() {
@@ -370,6 +436,10 @@ impl<R: Read> ParseProto<R> {
         }
     }
 
+    // tableconstructor ::= ‘{’ [fieldlist] ‘}’
+    // fieldlist ::= field {fieldsep field} [fieldsep]
+    // field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
+    // fieldsep ::= ‘,’ | ‘;’
     fn table_constructor(&mut self) -> ExpDesc {
         let table = self.sp;
         self.sp += 1;
@@ -439,7 +509,7 @@ impl<R: Read> ParseProto<R> {
                 }
                 Token::Name(_) => {
                     let name = self.read_name();
-                    if self.lex.peek() == &Token::Assign {
+                    if *self.lex.peek() == Token::Assign {
                         // Name `=` exp
                         self.lex.next();
                         TableEntry::Map((
@@ -510,40 +580,6 @@ impl<R: Read> ParseProto<R> {
         } else {
             panic!("expect name");
         }
-    }
-
-    fn load_expr(&mut self, dst: usize) {
-        let code = match self.lex.next() {
-            Token::Nil => ByteCode::LoadNil(dst as u8, 1),
-            Token::True => ByteCode::LoadBool(dst as u8, true),
-            Token::False => ByteCode::LoadBool(dst as u8, false),
-            Token::Integer(i) => {
-                if let Ok(ii) = i16::try_from(i) {
-                    ByteCode::LoadInt(dst as u8, ii)
-                } else {
-                    self.load_const(dst, Value::Integer(i))
-                }
-            }
-            Token::Float(f) => self.load_const(dst, Value::Float(f)),
-            Token::String(s) => self.load_const(dst, s),
-            Token::Name(var) => self.load_var(dst, var),
-            _ => panic!("invalid argument"),
-        };
-
-        self.byte_codes.push(code)
-    }
-
-    fn load_var(&mut self, dst: usize, name: String) -> ByteCode {
-        if let Some(src) = self.get_local(&name) {
-            ByteCode::Move(dst as u8, src as u8)
-        } else {
-            let ic = self.add_const(name);
-            ByteCode::GetGlobal(dst as u8, ic as u8)
-        }
-    }
-
-    fn get_local(&mut self, name: &String) -> Option<usize> {
-        self.locals.iter().rposition(|v| *v == *name)
     }
 
     fn load_const(&mut self, dst: usize, c: impl Into<Value>) -> ByteCode {
