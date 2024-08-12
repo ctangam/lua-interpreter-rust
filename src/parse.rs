@@ -202,6 +202,27 @@ impl<R: Read> ParseProto<R> {
         }
     }
 
+    fn exp(&mut self) -> ExpDesc {
+        let ahead = self.lex.next();
+        self.exp_with_ahead(ahead)
+    }
+
+    fn exp_with_ahead(&mut self, ahead: Token) -> ExpDesc {
+        match ahead {
+            Token::Nil => ExpDesc::Nil,
+            Token::True => ExpDesc::Boolean(true),
+            Token::False => ExpDesc::Boolean(false),
+            Token::Integer(i) => ExpDesc::Integer(i),
+            Token::Float(f) => ExpDesc::Float(f),
+            Token::String(s) => ExpDesc::String(s),
+            Token::Function => todo!("function"),
+            Token::CurlyL => self.table_constructor(),
+            Token::Sub | Token::Not | Token::BitXor | Token::Len => todo!("unary op"),
+            Token::Dots => todo!("dots"),
+            t => self.prefixexp(t),
+        }
+    }
+
     fn prefixexp(&mut self, ahead: Token) -> ExpDesc {
         let sp0 = self.sp;
 
@@ -249,28 +270,32 @@ impl<R: Read> ParseProto<R> {
     }
 
     fn args(&mut self) -> ExpDesc {
-        todo!()
-    }
+        let ifunc = self.sp - 1;
+        let argn = match self.lex.next() {
+            Token::ParL => {
+                if *self.lex.peek() != Token::ParR {
+                    let argn = self.explist();
+                    self.lex.expect(Token::ParR);
+                    argn
+                } else {
+                    self.lex.next();
+                    0
+                }
+            }
+            Token::CurlyL => {
+                self.table_constructor();
+                1
+            }
+            Token::String(s) => {
+                self.discharge(ifunc + 1, ExpDesc::String(s));
+                1
+            }
+            t => panic!("invalid args {t:?}"),
+        };
 
-    fn exp(&mut self) -> ExpDesc {
-        let ahead = self.lex.next();
-        self.exp_with_ahead(ahead)
-    }
-
-    fn exp_with_ahead(&mut self, ahead: Token) -> ExpDesc {
-        match ahead {
-            Token::Nil => ExpDesc::Nil,
-            Token::True => ExpDesc::Boolean(true),
-            Token::False => ExpDesc::Boolean(false),
-            Token::Integer(i) => ExpDesc::Integer(i),
-            Token::Float(f) => ExpDesc::Float(f),
-            Token::String(s) => ExpDesc::String(s),
-            Token::Function => todo!("function"),
-            Token::CurlyL => self.table_constructor(),
-            Token::Sub | Token::Not | Token::BitXor | Token::Len => todo!("unary op"),
-            Token::Dots => todo!("dots"),
-            t => panic!("invalid exp: {:?}", t),
-        }
+        self.byte_codes
+            .push(ByteCode::Call(ifunc as u8, argn as u8));
+        ExpDesc::Call
     }
 
     fn simple_name(&mut self, name: &str) -> ExpDesc {
@@ -303,7 +328,9 @@ impl<R: Read> ParseProto<R> {
                 }
             }
             ExpDesc::Global(i) => ByteCode::GetGlobal(dst as u8, i as u8),
-            ExpDesc::IndexField(itable, ikey) => ByteCode::GetField(dst as u8, itable as u8, ikey as u8),
+            ExpDesc::IndexField(itable, ikey) => {
+                ByteCode::GetField(dst as u8, itable as u8, ikey as u8)
+            }
             ExpDesc::IndexInt(itable, ikey) => ByteCode::GetInt(dst as u8, itable as u8, ikey),
             ExpDesc::Index(itable, ikey) => ByteCode::GetTable(dst as u8, itable as u8, ikey as u8),
             ExpDesc::Call => todo!("discharge Call"),
@@ -341,35 +368,6 @@ impl<R: Read> ParseProto<R> {
             // discharge to stack
             _ => ConstStack::Stack(self.discharge_top(desc)),
         }
-    }
-
-    fn load_exp(&mut self) {
-        let sp0 = self.sp;
-        let desc = self.exp();
-        self.discharge(sp0, desc);
-    }
-
-    fn func_call(&mut self, name: String) {
-        let ifunc = self.locals.len();
-        let iarg = ifunc + 1;
-        // function, variable
-        let code = self.load_var(ifunc, name);
-        self.byte_codes.push(code);
-        match self.lex.next() {
-            Token::ParL => {
-                self.load_expr(iarg);
-
-                if self.lex.next() != Token::ParR {
-                    panic!("expected `)`");
-                }
-            }
-            Token::String(s) => {
-                let code = self.load_const(iarg, s);
-                self.byte_codes.push(code);
-            }
-            _ => panic!("expected string"),
-        }
-        self.byte_codes.push(ByteCode::Call(ifunc as u8, 1))
     }
 
     fn table_constructor(&mut self) -> ExpDesc {
