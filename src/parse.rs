@@ -313,6 +313,7 @@ impl<R: Read> ParseProto<R> {
                         }
                         key => ExpDesc::Index(itable, self.discharge_top(key)),
                     };
+                    self.lex.expect(Token::SqurR);
                 }
                 Token::Dot => {
                     self.lex.next();
