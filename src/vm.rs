@@ -1,6 +1,10 @@
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, io::Read, rc::Rc};
 
-use crate::{bytecode::ByteCode, parse::ParseProto, value::{Table, Value}};
+use crate::{
+    bytecode::ByteCode,
+    parse::ParseProto,
+    value::{Table, Value},
+};
 
 fn lib_print(state: &mut ExeState) -> i32 {
     println!("{:?}", state.stack[state.func_index + 1]);
@@ -49,48 +53,47 @@ impl ExeState {
                     let value = proto.constants[idx as usize].clone();
                     self.set_stack(dst, value);
                 }
-                ByteCode::LoadNil(dst, n) => {
-                    for dst in dst..dst + n {
-                        self.set_stack(dst, Value::Nil);
-                    }
-                }
+                ByteCode::LoadNil(dst, n) => self.fill_stack(dst as usize, n as usize),
                 ByteCode::LoadBool(dst, b) => self.set_stack(dst, Value::Boolean(b)),
                 ByteCode::LoadInt(dst, i) => self.set_stack(dst, Value::Integer(i as i64)),
                 ByteCode::Move(dst, src) => {
                     let value = self.stack[src as usize].clone();
                     self.set_stack(dst, value);
                 }
-                ByteCode::Call(func, _) => {
-                    self.func_index = func as usize;
-                    let func = &self.stack[self.func_index];
-                    if let Value::Function(f) = func {
-                        f(self);
-                    } else {
-                        panic!("invalid function: {func:?}");
-                    }
-                }
+
                 ByteCode::NewTable(dst, narray, nmap) => {
                     let table = Table::new(narray as usize, nmap as usize);
                     self.set_stack(dst, Value::Table(Rc::new(RefCell::new(table))));
                 }
-                ByteCode::SetTable(table, key, value) => {
-                    let key = self.stack[key as usize].clone();
+                ByteCode::SetInt(table, key, value) => {
                     let value = self.stack[value as usize].clone();
-                    if let Value::Table(table) = &self.stack[table as usize] {
-                        table.borrow_mut().map.insert(key, value);
-                    } else {
-                        panic!("invalid table: {table:?}");
-                    }
+                    self.set_table_int(table, key as i64, value);
+                }
+                ByteCode::SetIntConst(table, key, value) => {
+                    let value = proto.constants[value as usize].clone();
+                    self.set_table_int(table, key as i64, value);
                 }
                 ByteCode::SetField(table, key, value) => {
                     let key = proto.constants[key as usize].clone();
                     let value = self.stack[value as usize].clone();
-                    if let Value::Table(table) = &self.stack[table as usize] {
-                        table.borrow_mut().map.insert(key, value);
-                    } else {
-                        panic!("invalid table: {table:?}");
-                    }
+                    self.set_table(table, key, value);
                 }
+                ByteCode::SetFieldConst(table, key, value) => {
+					let key = proto.constants[key as usize].clone();
+					let value = proto.constants[value as usize].clone();
+					self.set_table(table, key, value);
+				}
+
+                ByteCode::SetTable(table, key, value) => {
+                    let key = self.stack[key as usize].clone();
+                    let value = self.stack[value as usize].clone();
+					self.set_table(table, key, value);
+                }
+                ByteCode::SetTableConst(table, key, value) => {
+					let key = self.stack[key as usize].clone();
+					let value = proto.constants[value as usize].clone();
+					self.set_table(table, key, value);
+				}
                 ByteCode::SetList(table, n) => {
                     let ivalue = table as usize + 1;
                     if let Value::Table(table) = self.stack[table as usize].clone() {
@@ -100,13 +103,30 @@ impl ExeState {
                         panic!("invalid table: {table:?}");
                     }
                 }
-                ByteCode::SetInt(_, _, _) => todo!(),
-                ByteCode::SetTableConst(_, _, _) => todo!(),
-                ByteCode::SetFieldConst(_, _, _) => todo!(),
-                ByteCode::SetIntConst(_, _, _) => todo!(),
-                ByteCode::GetTable(_, _, _) => todo!(),
-                ByteCode::GetField(_, _, _) => todo!(),
-                ByteCode::GetInt(_, _, _) => todo!(),
+				ByteCode::GetInt(dst, table, key) => {
+					let value = self.get_table_int(table, key as i64);
+					self.set_stack(dst, value);
+				}
+                ByteCode::GetField(dst, table, key) => {
+					let key = &proto.constants[key as usize];
+					let value = self.get_table(table, key);
+					self.set_stack(dst, value);
+				}
+                ByteCode::GetTable(dst, table, key) => {
+					let key = &self.stack[key as usize];
+					let value = self.get_table(table, key);
+					self.set_stack(dst, value);
+				}
+
+                ByteCode::Call(func, _) => {
+                    self.func_index = func as usize;
+                    let func = &self.stack[self.func_index];
+                    if let Value::Function(f) = func {
+                        f(self);
+                    } else {
+                        panic!("invalid function: {func:?}");
+                    }
+                }
             }
         }
     }
@@ -139,9 +159,58 @@ impl ExeState {
     }
 
     fn set_table_int(&mut self, table: u8, key: i64, value: Value) {
-
+        if let Value::Table(table) = &self.stack[table as usize] {
+            let mut table = table.borrow_mut();
+            if key > 0 && (key < 4 || key < table.array.capacity() as i64 * 2) {
+                set_vec(&mut table.array, key as usize - 1, value);
+            } else {
+                table.map.insert(Value::Integer(key), value);
+            }
+        } else {
+            panic!("invalid table: {table:?}");
+        }
     }
 
     fn do_set_table(&mut self, table: u8, key: Value, value: Value) {
+        if let Value::Table(table) = &self.stack[table as usize] {
+            table.borrow_mut().map.insert(key, value);
+        } else {
+            panic!("invalid table: {table:?}");
+        }
+    }
+
+	fn get_table(&self, table: u8, key: &Value) -> Value {
+		match key {
+			Value::Integer(i) => self.get_table_int(table, *i),
+			_ => self.do_get_table(table, key),
+		}
+	}
+
+	fn get_table_int(&self, table: u8, key: i64) -> Value {
+		if let Value::Table(table) = &self.stack[table as usize] {
+			let table = table.borrow();
+			table.array.get(key as usize - 1).unwrap_or_else(|| table.map.get(&Value::Integer(key)).unwrap_or(&Value::Nil)).clone()
+		} else {
+			panic!("invalid table: {table:?}");
+		}
+	}
+
+	fn do_get_table(&self, table: u8, key: &Value) -> Value {
+		if let Value::Table(table) = &self.stack[table as usize] {
+			table.borrow().map.get(key).unwrap_or(&Value::Nil).clone()
+		} else {
+			panic!("invalid table: {table:?}");
+		}
+	}
+}
+
+fn set_vec(vec: &mut Vec<Value>, key: usize, value: Value) {
+    match key.cmp(&vec.len()) {
+        Ordering::Less => vec[key] = value,
+        Ordering::Equal => vec.push(value),
+        Ordering::Greater => {
+            vec.resize(key, Value::Nil);
+            vec.push(value)
+        }
     }
 }
