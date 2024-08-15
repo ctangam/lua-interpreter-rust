@@ -21,6 +21,9 @@ pub enum ByteCode {
     GetTable(u8, u8, u8),
     GetField(u8, u8, u8),
     GetInt(u8, u8, u8),
+    
+    Test(u8, i16),
+    Jump(i16),
 
     Call(u8, u8),
 
@@ -68,4 +71,5 @@ pub enum ByteCode {
     Concat(u8, u8, u8),
     ConcatInt(u8, u8, u8),
     ConcatConst(u8, u8, u8),
+
 }

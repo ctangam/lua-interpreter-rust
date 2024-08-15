@@ -38,6 +38,7 @@ pub struct ParseProto<R: Read> {
     pub constants: Vec<Value>,
     pub byte_codes: Vec<ByteCode>,
     pub locals: Vec<String>,
+    pub break_blocks: Vec<Vec<usize>>,
     pub lex: Lex<R>,
     pub sp: usize,
 }
@@ -48,6 +49,7 @@ impl<R: Read> ParseProto<R> {
             constants: Vec::new(),
             byte_codes: Vec::new(),
             locals: Vec::new(),
+            break_blocks: Vec::new(),
             lex: Lex::new(input),
             sp: 0,
         };
@@ -63,7 +65,7 @@ impl<R: Read> ParseProto<R> {
     }
 
     fn chunk(&mut self) {
-        self.block()
+        assert_eq!(self.block(), Token::Eos);
     }
 
     // BNF:
@@ -83,13 +85,20 @@ impl<R: Read> ParseProto<R> {
     //     function funcname funcbody |
     //     local function Name funcbody |
     //     local attnamelist [`=` explist]
-    fn block(&mut self) {
+    fn block(&mut self) -> Token {
+        let nvar = self.locals.len();
+        let end_token = self.block_scope();
+        self.locals.truncate(nvar);
+        end_token
+    }
+
+    fn block_scope(&mut self) -> Token {
         loop {
             self.sp = self.locals.len();
-
+    
             match self.lex.next() {
                 Token::SemiColon => (),
-
+    
                 t @ Token::Name(_) | t @ Token::ParL => {
                     let desc = self.prefixexp(t);
                     if desc == ExpDesc::Call {
@@ -98,12 +107,13 @@ impl<R: Read> ParseProto<R> {
                     }
                 }
                 Token::Local => self.local(),
-                Token::Eos => break,
-                t => panic!("invalid block: {:?}", t),
+                Token::If => self.if_stat(),
+                Token::While => self.while_stat(),
+                t => break t,
             }
         }
     }
-
+    
     // BNF:
     //   local attnamelist [`=` explist]
     //   attnamelist ::=  Name attrib {`,` Name attrib}
@@ -217,6 +227,68 @@ impl<R: Read> ParseProto<R> {
         self.byte_codes.push(code);
     }
 
+    // BNF:
+    //   if exp then block {elseif exp then block} [else block] end
+    fn if_stat(&mut self) {
+        let mut jmp_ends = Vec::new();
+
+        let mut end_token = self.do_if_block(&mut jmp_ends);
+
+        while end_token == Token::Elseif {
+            end_token = self.do_if_block(&mut jmp_ends);
+        }
+
+        if end_token == Token::Else {
+            end_token = self.block();
+        }
+
+        assert_eq!(end_token, Token::End);
+
+        let iend = self.byte_codes.len() - 1;
+        for i in jmp_ends.into_iter() {
+            self.byte_codes[i] = ByteCode::Jump((iend - i) as i16)
+        }
+    }
+
+    fn do_if_block(&mut self, jmp_ends: &mut Vec<usize>) -> Token {
+        let icond = self.exp_discharge_any();
+        self.lex.expect(Token::Then);
+
+        self.byte_codes.push(ByteCode::Test(0, 0));
+        let itest = self.byte_codes.len() - 1;
+
+        let end_token = self.block();
+
+        if matches!(end_token, Token::Elseif | Token::Else) {
+            self.byte_codes.push(ByteCode::Jump(0));
+            jmp_ends.push(self.byte_codes.len() - 1);
+        }
+
+        let iend = self.byte_codes.len() - 1;
+        self.byte_codes[itest] = ByteCode::Test(icond as u8, (iend - itest) as i16);
+
+        end_token
+    }
+
+    // BNF:
+    //   while exp do block end
+    fn while_stat(&mut self) {
+        let istart = self.byte_codes.len();
+
+        let icond = self.exp_discharge_any();
+        self.lex.expect(Token::Do);
+
+        self.byte_codes.push(ByteCode::Test(0, 0));
+        let itest = self.byte_codes.len() - 1;
+
+        // self.push_loop_block();
+
+        assert_eq!(self.block(), Token::End);
+
+        let iend = self.byte_codes.len() - 1;
+
+    }
+
     // explist ::= exp {`,` exp}
     fn explist(&mut self) -> usize {
         let mut n = 0;
@@ -232,6 +304,11 @@ impl<R: Read> ParseProto<R> {
 
             self.lex.next();
         }
+    }
+
+    fn exp_discharge_any(&mut self) -> usize {
+        let e = self.exp();
+        self.discharge_top(e)
     }
 
     // BNF:

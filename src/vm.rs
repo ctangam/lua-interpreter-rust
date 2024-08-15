@@ -425,6 +425,8 @@ impl ExeState {
                     let r = exe_concat(&self.stack[a as usize], &Value::Integer(i as i64));
                     self.set_stack(dst, r);
                 }
+                ByteCode::Test(_, _) => todo!(),
+                ByteCode::Jump(_) => todo!(),
             }
         }
     }
