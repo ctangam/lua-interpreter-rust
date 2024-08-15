@@ -38,8 +38,10 @@ impl ExeState {
     }
 
     pub fn execute<R: Read>(&mut self, proto: &ParseProto<R>) {
-        for code in proto.byte_codes.iter() {
-            match *code {
+        let mut pc = 0;
+        while pc < proto.byte_codes.len() {
+            println!("  [{pc}]\t{:?}", proto.byte_codes[pc]);
+            match proto.byte_codes[pc] {
                 ByteCode::GetGlobal(dst, idx) => {
                     let key: &str = (&proto.constants[idx as usize]).into();
                     let v = self.globals.get(key).unwrap_or(&Value::Nil).clone();
@@ -425,9 +427,15 @@ impl ExeState {
                     let r = exe_concat(&self.stack[a as usize], &Value::Integer(i as i64));
                     self.set_stack(dst, r);
                 }
-                ByteCode::Test(_, _) => todo!(),
-                ByteCode::Jump(_) => todo!(),
+                ByteCode::Test(icond, jmp) => {
+                    let cond = &self.stack[icond as usize];
+                    if matches!(cond, Value::Nil | Value::Boolean(false)) {
+                        pc = (pc as isize + jmp as isize) as usize
+                    }
+                }
+                ByteCode::Jump(jmp) => pc = (pc as isize + jmp as isize) as usize,
             }
+            pc += 1;
         }
     }
 

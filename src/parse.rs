@@ -285,8 +285,12 @@ impl<R: Read> ParseProto<R> {
 
         assert_eq!(self.block(), Token::End);
 
-        let iend = self.byte_codes.len() - 1;
+        let iend = self.byte_codes.len();
+        self.byte_codes.push(ByteCode::Jump(-((iend - istart) as i16) - 1));
 
+        // self.pop_loop_block(istart);
+
+        self.byte_codes[itest] = ByteCode::Test(icond as u8, (iend - istart) as i16)
     }
 
     // explist ::= exp {`,` exp}

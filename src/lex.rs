@@ -92,15 +92,11 @@ impl<R: Read> Lex<R> {
                 b'>' => self.check_ahead2(b'=', Token::GreEq, b'>', Token::ShiftR, Token::Greater),
                 
                 b'-' => {
-                    println!("1");
                     if self.peek_byte() == b'-' {
-                        println!("4");
                         self.read_byte();
-                        println!("2");
                         self.read_comment();
                         self.do_next()
                     } else {
-                        println!("3");
                         Token::Sub
                     }
                 }
@@ -199,7 +195,6 @@ impl<R: Read> Lex<R> {
         s.push(first as char);
         loop {
             match self.peek_byte() {
-                b'\0' => panic!("unfinished literal string"),
                 c if (c as char).is_alphanumeric() || c == b'_' => {
                     self.read_byte();
                     s.push(c as char);
