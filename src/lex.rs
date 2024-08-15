@@ -92,11 +92,15 @@ impl<R: Read> Lex<R> {
                 b'>' => self.check_ahead2(b'=', Token::GreEq, b'>', Token::ShiftR, Token::Greater),
                 
                 b'-' => {
+                    println!("1");
                     if self.peek_byte() == b'-' {
+                        println!("4");
                         self.read_byte();
+                        println!("2");
                         self.read_comment();
                         self.do_next()
                     } else {
+                        println!("3");
                         Token::Sub
                     }
                 }
@@ -282,11 +286,11 @@ impl<R: Read> Lex<R> {
     // '--' has been read
     fn read_comment(&mut self) {
         match self.read_byte() {
+            None => (),
             Some(b'[') => todo!("long comment"),
-            _ => { // line comment
-                loop {
-                    let ch = self.read_byte();
-                    if ch == Some(b'\n') || ch == Some(b'\0') {
+            Some(_) => { // line comment
+                while let Some(byt) = self.read_byte() {
+                    if byt == b'\n' {
                         break;
                     }
                 }

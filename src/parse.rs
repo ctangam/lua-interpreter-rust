@@ -450,7 +450,7 @@ impl<R: Read> ParseProto<R> {
         match self.exp_unop() {
             ExpDesc::String(s) => ExpDesc::Integer(s.len() as i64),
             ExpDesc::Nil | ExpDesc::Boolean(_) | ExpDesc::Integer(_) | ExpDesc::Float(_) => {
-                panic!("invalid ~ operator")
+                panic!("invalid # operator")
             }
             desc => ExpDesc::UnaryOp(ByteCode::Len, self.discharge_top(desc)),
         }
@@ -584,7 +584,6 @@ impl<R: Read> ParseProto<R> {
             ExpDesc::Float(f) => (opk, self.add_const(f)),
             _ => (opr, self.discharge_top(right)),
         };
-
         ExpDesc::BinaryOp(op, left, right)
     }
 
@@ -619,8 +618,8 @@ impl<R: Read> ParseProto<R> {
 
             ExpDesc::Call => todo!("discharge Call"),
 
-            ExpDesc::UnaryOp(_, _) => todo!(),
-            ExpDesc::BinaryOp(_, _, _) => todo!(),
+            ExpDesc::UnaryOp(op, i) => op(dst as u8, i as u8),
+            ExpDesc::BinaryOp(op, left, right) => op(dst as u8, left as u8, right as u8),
         };
         self.byte_codes.push(code);
         self.sp = dst + 1;
