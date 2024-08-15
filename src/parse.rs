@@ -57,9 +57,10 @@ impl<R: Read> ParseProto<R> {
 
         println!("constants: {:?}", &proto.constants);
         println!("byte_codes:");
-        for c in proto.byte_codes.iter() {
-            println!("  {:?}", c);
+        for (i,c) in proto.byte_codes.iter().enumerate() {
+            println!("  {i}\t{c:?}");
         }
+        println!("===============================");
 
         proto
     }
