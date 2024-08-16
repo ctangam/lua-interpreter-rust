@@ -39,6 +39,7 @@ pub struct ParseProto<R: Read> {
     pub byte_codes: Vec<ByteCode>,
     pub locals: Vec<String>,
     pub break_blocks: Vec<Vec<usize>>,
+    pub continue_blocks: Vec<Vec<(usize, usize)>>,
     pub lex: Lex<R>,
     pub sp: usize,
 }
@@ -50,6 +51,7 @@ impl<R: Read> ParseProto<R> {
             byte_codes: Vec::new(),
             locals: Vec::new(),
             break_blocks: Vec::new(),
+            continue_blocks: Vec::new(),
             lex: Lex::new(input),
             sp: 0,
         };
@@ -101,6 +103,10 @@ impl<R: Read> ParseProto<R> {
                 Token::SemiColon => (),
     
                 t @ Token::Name(_) | t @ Token::ParL => {
+                    if self.try_continue_stat(&t) {
+                        continue;
+                    }
+
                     let desc = self.prefixexp(t);
                     if desc == ExpDesc::Call {
                     } else {
@@ -113,6 +119,7 @@ impl<R: Read> ParseProto<R> {
                 Token::For => self.for_stat(),
                 Token::Do => self.do_stat(),
                 Token::Repeat => self.repeat_stat(),
+                Token::Break => self.break_stat(),
                 t => break t,
             }
         }
@@ -285,14 +292,14 @@ impl<R: Read> ParseProto<R> {
         self.byte_codes.push(ByteCode::Test(0, 0));
         let itest = self.byte_codes.len() - 1;
 
-        // self.push_loop_block();
+        self.push_loop_block();
 
         assert_eq!(self.block(), Token::End);
 
         let iend = self.byte_codes.len();
         self.byte_codes.push(ByteCode::Jump(-((iend - istart) as i16) - 1));
 
-        // self.pop_loop_block(istart);
+        self.pop_loop_block(istart);
 
         self.byte_codes[itest] = ByteCode::Test(icond as u8, (iend - istart) as i16)
     }
@@ -329,7 +336,7 @@ impl<R: Read> ParseProto<R> {
         let iprepare = self.byte_codes.len() - 1;
         let iname = self.sp - 3;
 
-        // self.push_loop_block();
+        self.push_loop_block();
 
         assert_eq!(self.block(), Token::End);
 
@@ -341,7 +348,7 @@ impl<R: Read> ParseProto<R> {
         self.byte_codes.push(ByteCode::ForLoop(iname as u8, d as u16));
         self.byte_codes[iprepare] = ByteCode::ForPrepare(iname as u8, d as u16);
 
-        // self.pop_loop_block(self.byte_codes.len() - 1);
+        self.pop_loop_block(self.byte_codes.len() - 1);
     }
 
     // BNF:
@@ -355,7 +362,7 @@ impl<R: Read> ParseProto<R> {
     fn repeat_stat(&mut self) {
         let istart = self.byte_codes.len();
 
-        // self.push_loop_block();
+        self.push_loop_block();
 
         let nvar = self.locals.len();
 
@@ -367,8 +374,59 @@ impl<R: Read> ParseProto<R> {
         let iend2 = self.byte_codes.len();
         self.byte_codes.push(ByteCode::Test(icond as u8, -((iend2 - istart + 1) as i16)));
 
-        // self.pop_loop_block(iend1);
+        self.pop_loop_block(iend1);
         self.locals.truncate(nvar);
+    }
+
+    fn break_stat(&mut self) {
+        if let Some(breaks) = self.break_blocks.last_mut() {
+            self.byte_codes.push(ByteCode::Jump(0));
+            breaks.push(self.byte_codes.len() - 1);
+        } else {
+            panic!("break outside loop")
+        }
+    }
+
+    fn try_continue_stat(&mut self, name: &Token) -> bool {
+        if let Token::Name(name) = name {
+            if name.as_str() != "continue" {
+                return false;
+            }
+            if !matches!(self.lex.peek(), Token::End | Token::Elseif | Token::Else) {
+                return false;
+            }
+
+            if let Some(continues) = self.continue_blocks.last_mut() {
+                self.byte_codes.push(ByteCode::Jump(0));
+                continues.push((self.byte_codes.len() - 1, self.locals.len()))
+            } else {
+                panic!("continue outside loop")
+            }
+
+            true
+        } else {
+            false
+        }
+    }
+
+    fn push_loop_block(&mut self) {
+        self.break_blocks.push(Vec::new());
+        self.continue_blocks.push(Vec::new());
+    }
+
+    fn pop_loop_block(&mut self, icontinue: usize) {
+        let iend = self.byte_codes.len() - 1;
+        for i in self.break_blocks.pop().unwrap().into_iter() {
+            self.byte_codes[i] = ByteCode::Jump((iend - i) as i16);
+        }
+
+        let end_nvar = self.locals.len();
+        for (i, i_nvar) in self.continue_blocks.pop().unwrap().into_iter() {
+            if i_nvar < end_nvar {
+                panic!("continue jump into local scope")
+            }
+            self.byte_codes[i] = ByteCode::Jump((icontinue as isize - i as isize - 1) as i16)
+        }
     }
 
     // explist ::= exp {`,` exp}
