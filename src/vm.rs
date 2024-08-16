@@ -1,9 +1,5 @@
 use std::{
-    cell::RefCell,
-    cmp::Ordering,
-    collections::HashMap,
-    io::{Read, Write},
-    rc::Rc,
+    cell::RefCell, cmp::Ordering, collections::HashMap, fmt::DebugStruct, io::{Read, Write}, rc::Rc, str::SplitWhitespace
 };
 
 use crate::{
@@ -434,8 +430,88 @@ impl ExeState {
                     }
                 }
                 ByteCode::Jump(jmp) => pc = (pc as isize + jmp as isize) as usize,
+                ByteCode::ForPrepare(dst, jmp) => {
+                    if let (&Value::Integer(mut i), &Value::Integer(step)) = (&self.stack[dst as usize], &self.stack[dst as usize + 2]) {
+                        if step == 0 {
+                            panic!("0 step in numerical for")
+                        }
+                        let limit = match self.stack[dst as usize + 1] {
+                            Value::Integer(limit) => limit,
+                            Value::Float(limit) => {
+                                let limit = for_int_limit(limit, step > 0, &mut i);
+                                self.set_stack(dst + 1, Value::Integer(limit));
+                                limit
+                            }
+                            _ => panic!("invalid limit type"),
+                        };
+                        if !for_check(i, limit, step > 0) {
+                            pc += jmp as usize;
+                        }
+                    } else {
+                        let i = self.make_float(dst);
+                        let limit = self.make_float(dst + 1);
+                        let step = self.make_float(dst + 2);
+                        if step == 0.0 {
+                            panic!("invalid for numerical exp")
+                        }
+                        if !for_check(i, limit, step > 0.0) {
+                            pc += jmp as usize;
+                        }
+                    }
+                }
+                ByteCode::ForLoop(dst, jmp) => {
+                    match self.stack[dst as usize] {
+                        Value::Integer(i) => {
+                            let limit = self.read_int(dst + 1);
+                            let step = self.read_int(dst + 2);
+                            let i = i + step;
+                            if for_check(i, limit, step > 0) {
+                                self.set_stack(dst, Value::Integer(i));
+                                pc -= jmp as usize;
+                            }
+                        }
+                        Value::Float(f) => {
+                            let limit = self.read_float(dst + 1);
+                            let step = self.read_float(dst + 2);
+                            let f = f + step;
+                            if for_check(f, limit, step > 0.0) {
+                                self.set_stack(dst, Value::Float(f));
+                                pc -= jmp as usize;
+                            }
+
+                        }
+                        _ => panic!("xx")
+                    }
+                }
             }
             pc += 1;
+        }
+    }
+
+    fn make_float(&mut self, dst: u8) -> f64 {
+        match self.stack[dst as usize] {
+            Value::Float(f) => f,
+            Value::Integer(i) => {
+                let f = i as f64;
+                self.set_stack(dst, Value::Float(f));
+                f
+            }
+            ref v => panic!("not number {v:?}")
+        }
+    }
+
+    fn read_int(&self, dst: u8) -> i64 {
+        if let Value::Integer(i) = self.stack[dst as usize] {
+            i
+        } else {
+            panic!("invalid integer");
+        }
+    }
+    fn read_float(&self, dst: u8) -> f64 {
+        if let Value::Float(f) = self.stack[dst as usize] {
+            f
+        } else {
+            panic!("invalid integer");
         }
     }
 
@@ -621,4 +697,30 @@ fn exe_concat(v1: &Value, v2: &Value) -> Value {
     };
 
     [v1, v2].concat().into()
+}
+
+fn for_check<T: PartialOrd>(i: T, limit: T, is_step_positive: bool) -> bool {
+    if is_step_positive {
+        i <= limit
+    } else {
+        i >= limit
+    }
+}
+
+fn for_int_limit(limit: f64, is_step_positive: bool, i: &mut i64) -> i64 {
+    if is_step_positive {
+        if limit < i64::MIN as f64 {
+            *i = 0;
+            -1
+        } else {
+            limit.floor() as i64
+        }
+    } else {
+        if limit > i64::MAX as f64 {
+            *i = 0;
+            1
+        } else {
+            limit.ceil() as i64
+        }
+    }
 }
