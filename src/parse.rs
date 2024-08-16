@@ -34,12 +34,21 @@ enum ConstStack {
 }
 
 #[derive(Debug)]
+struct GotoLabel {
+    name: String,
+    icode: usize,
+    nvar: usize,
+}
+
+#[derive(Debug)]
 pub struct ParseProto<R: Read> {
     pub constants: Vec<Value>,
     pub byte_codes: Vec<ByteCode>,
     pub locals: Vec<String>,
     pub break_blocks: Vec<Vec<usize>>,
     pub continue_blocks: Vec<Vec<(usize, usize)>>,
+    pub gotos: Vec<GotoLabel>,
+    pub labels: Vec<GotoLabel>,
     pub lex: Lex<R>,
     pub sp: usize,
 }
@@ -52,6 +61,8 @@ impl<R: Read> ParseProto<R> {
             locals: Vec::new(),
             break_blocks: Vec::new(),
             continue_blocks: Vec::new(),
+            gotos: Vec::new(),
+            labels: Vec::new(),
             lex: Lex::new(input),
             sp: 0,
         };
@@ -69,6 +80,9 @@ impl<R: Read> ParseProto<R> {
 
     fn chunk(&mut self) {
         assert_eq!(self.block(), Token::Eos);
+        if let Some(goto) = self.gotos.first() {
+            panic!("goto {} no destination", &goto.name);
+        }
     }
 
     // BNF:
@@ -96,6 +110,8 @@ impl<R: Read> ParseProto<R> {
     }
 
     fn block_scope(&mut self) -> Token {
+        let igoto = self.gotos.len();
+        let ilabel = self.labels.len();
         loop {
             self.sp = self.locals.len();
     
@@ -120,7 +136,12 @@ impl<R: Read> ParseProto<R> {
                 Token::Do => self.do_stat(),
                 Token::Repeat => self.repeat_stat(),
                 Token::Break => self.break_stat(),
-                t => break t,
+                Token::Goto => self.goto_stat(),
+                Token::DoubColon => self.label_stat(),
+                t => {
+                    self.close_goto_labels(igoto, ilabel);
+                    break t;
+                },
             }
         }
     }
@@ -385,6 +406,55 @@ impl<R: Read> ParseProto<R> {
         } else {
             panic!("break outside loop")
         }
+    }
+
+    // BNF:
+    //   goto Name
+    fn goto_stat(&mut self) {
+        let name = self.read_name();
+
+        self.byte_codes.push(ByteCode::Jump(0));
+
+        self.gotos.push(GotoLabel {
+            name,
+            icode: self.byte_codes.len() - 1,
+            nvar: self.locals.len(),
+        })
+    }
+
+    // BNF:
+    //   label ::= `::` Name `::`
+    fn label_stat(&mut self) {
+        let name = self.read_name();
+        self.lex.expect(Token::DoubColon);
+
+        if self.labels.iter().any(|label| label.name == name) {
+            panic!("duplicate label {name}");
+        }
+
+        self.labels.push(GotoLabel {
+            name,
+            icode: self.byte_codes.len(),
+            nvar: self.locals.len(),
+        })
+    }
+
+    fn close_goto_labels(&mut self, igoto: usize, ilabel: usize) {
+        let mut no_dsts = Vec::new();
+        for goto in self.gotos.drain(igoto..) {
+            if let Some(label) = self.labels.iter().rev().find(|label| label.name == goto.name) {
+                if label.icode != self.byte_codes.len() && label.nvar > goto.nvar {
+                    panic!("goto jump into scope {}", goto.name);
+                }
+                let d = (label.icode as isize - goto.icode as isize) as i16;
+                self.byte_codes[goto.icode] = ByteCode::Jump(d - 1);
+            } else {
+                no_dsts.push(goto);
+            }
+        }
+        self.gotos.append(&mut no_dsts);
+
+        self.labels.truncate(ilabel);
     }
 
     fn try_continue_stat(&mut self, name: &Token) -> bool {
