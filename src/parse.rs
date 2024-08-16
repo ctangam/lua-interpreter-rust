@@ -111,6 +111,8 @@ impl<R: Read> ParseProto<R> {
                 Token::If => self.if_stat(),
                 Token::While => self.while_stat(),
                 Token::For => self.for_stat(),
+                Token::Do => self.do_stat(),
+                Token::Repeat => self.repeat_stat(),
                 t => break t,
             }
         }
@@ -340,6 +342,33 @@ impl<R: Read> ParseProto<R> {
         self.byte_codes[iprepare] = ByteCode::ForPrepare(iname as u8, d as u16);
 
         // self.pop_loop_block(self.byte_codes.len() - 1);
+    }
+
+    // BNF:
+    //   do block end
+    fn do_stat(&mut self) {
+        assert_eq!(self.block(), Token::End)
+    }
+
+    // BNF:
+    //   repeat block until exp
+    fn repeat_stat(&mut self) {
+        let istart = self.byte_codes.len();
+
+        // self.push_loop_block();
+
+        let nvar = self.locals.len();
+
+        assert_eq!(self.block_scope(), Token::Until);
+        let iend1 = self.byte_codes.len();
+
+        let icond = self.exp_discharge_any();
+
+        let iend2 = self.byte_codes.len();
+        self.byte_codes.push(ByteCode::Test(icond as u8, -((iend2 - istart + 1) as i16)));
+
+        // self.pop_loop_block(iend1);
+        self.locals.truncate(nvar);
     }
 
     // explist ::= exp {`,` exp}
