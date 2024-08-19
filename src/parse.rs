@@ -42,6 +42,8 @@ struct GotoLabel {
 
 #[derive(Debug)]
 pub struct FuncProto {
+    pub has_varargs: bool,
+    pub nparam: usize,
     pub constants: Vec<Value>,
     pub byte_codes: Vec<ByteCode>,
 }
@@ -61,14 +63,16 @@ pub struct ParseProto<'a, R: Read> {
 }
 
 impl<'a, R: Read> ParseProto<'a, R> {
-    pub fn new(lex: &'a mut Lex<R>) -> Self {
+    pub fn new(lex: &'a mut Lex<R>, has_varargs: bool, params: Vec<String>) -> Self {
         ParseProto {
             fp: FuncProto {
+                has_varargs,
+                nparam: params.len(),
                 constants: Vec::new(),
                 byte_codes: Vec::new(),
             },
             sp: 0,
-            locals: Vec::new(),
+            locals: params,
             break_blocks: Vec::new(),
             continue_blocks: Vec::new(),
             gotos: Vec::new(),
@@ -168,6 +172,8 @@ impl<'a, R: Read> ParseProto<'a, R> {
         self.locals.append(&mut vars)
     }
 
+    // BNF:
+    //   local function Name funcbody
     fn local_function(&mut self) {
         self.lex.next();
 
@@ -176,7 +182,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
         self.lex.expect(Token::ParL);
         self.lex.expect(Token::ParR);
-        let proto = chunk(self.lex, Token::End);
+        let proto = chunk(self.lex, false, Vec::new(), Token::End);
 
         let i = self.add_const(Value::LuaFunction(Rc::new(proto)));
         self.fp.byte_codes.push(ByteCode::LoadConst(self.sp as u8, i as u16));
@@ -1115,11 +1121,11 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
 pub fn load(input: impl Read) -> FuncProto {
     let mut lex = Lex::new(input);
-    chunk(&mut lex, Token::Eos)
+    chunk(&mut lex, false, Vec::new(), Token::Eos)
 }
 
-fn chunk(lex: &mut Lex<impl Read>, end_token: Token) -> FuncProto {
-    let mut proto = ParseProto::new(lex);
+fn chunk(lex: &mut Lex<impl Read>, has_varargs: bool, params: Vec<String>, end_token: Token) -> FuncProto {
+    let mut proto = ParseProto::new(lex, has_varargs, params);
 
     assert_eq!(proto.block(), end_token);
     if let Some(goto) = proto.gotos.first() {
