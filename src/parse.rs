@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::btree_map::Keys, io::Read};
+use std::{cmp::Ordering, collections::btree_map::Keys, io::Read, rc::Rc};
 
 use crate::{
     bytecode::ByteCode,
@@ -41,47 +41,39 @@ struct GotoLabel {
 }
 
 #[derive(Debug)]
-pub struct ParseProto<R: Read> {
+pub struct FuncProto {
     pub constants: Vec<Value>,
     pub byte_codes: Vec<ByteCode>,
+}
+
+#[derive(Debug)]
+pub struct ParseProto<'a, R: Read> {
+    pub fp: FuncProto,
+
+    pub sp: usize,
     pub locals: Vec<String>,
     pub break_blocks: Vec<Vec<usize>>,
     pub continue_blocks: Vec<Vec<(usize, usize)>>,
     pub gotos: Vec<GotoLabel>,
     pub labels: Vec<GotoLabel>,
-    pub lex: Lex<R>,
-    pub sp: usize,
+
+    lex: &'a mut Lex<R>,
 }
 
-impl<R: Read> ParseProto<R> {
-    pub fn load(input: R) -> Self {
-        let mut proto = ParseProto {
-            constants: Vec::new(),
-            byte_codes: Vec::new(),
+impl<'a, R: Read> ParseProto<'a, R> {
+    pub fn new(lex: &'a mut Lex<R>) -> Self {
+        ParseProto {
+            fp: FuncProto {
+                constants: Vec::new(),
+                byte_codes: Vec::new(),
+            },
+            sp: 0,
             locals: Vec::new(),
             break_blocks: Vec::new(),
             continue_blocks: Vec::new(),
             gotos: Vec::new(),
             labels: Vec::new(),
-            lex: Lex::new(input),
-            sp: 0,
-        };
-        proto.chunk();
-
-        println!("constants: {:?}", &proto.constants);
-        println!("byte_codes:");
-        for (i,c) in proto.byte_codes.iter().enumerate() {
-            println!("  {i}\t{c:?}");
-        }
-        println!("===============================");
-
-        proto
-    }
-
-    fn chunk(&mut self) {
-        assert_eq!(self.block(), Token::Eos);
-        if let Some(goto) = self.gotos.first() {
-            panic!("goto {} no destination", &goto.name);
+            lex: lex,
         }
     }
 
@@ -169,11 +161,27 @@ impl<R: Read> ParseProto<R> {
         if nexp < vars.len() {
             let ivar = self.locals.len() + nexp;
             let nnil = vars.len() - nexp;
-            self.byte_codes
+            self.fp.byte_codes
                 .push(ByteCode::LoadNil(ivar as u8, nnil as u8));
         }
 
         self.locals.append(&mut vars)
+    }
+
+    fn local_function(&mut self) {
+        self.lex.next();
+
+        let name = self.read_name();
+        println!("== function: {name}");
+
+        self.lex.expect(Token::ParL);
+        self.lex.expect(Token::ParR);
+        let proto = chunk(self.lex, Token::End);
+
+        let i = self.add_const(Value::LuaFunction(Rc::new(proto)));
+        self.fp.byte_codes.push(ByteCode::LoadConst(self.sp as u8, i as u16));
+
+        self.locals.push(name);
     }
 
     // BNF:
@@ -244,7 +252,7 @@ impl<R: Read> ParseProto<R> {
             _ => panic!("assign from stack"),
         };
 
-        self.byte_codes.push(code);
+        self.fp.byte_codes.push(code);
     }
 
     fn assign_from_const(&mut self, var: ExpDesc, value: usize) {
@@ -256,7 +264,7 @@ impl<R: Read> ParseProto<R> {
             _ => panic!("assign from stack"),
         };
 
-        self.byte_codes.push(code);
+        self.fp.byte_codes.push(code);
     }
 
     // BNF:
@@ -276,9 +284,9 @@ impl<R: Read> ParseProto<R> {
 
         assert_eq!(end_token, Token::End);
 
-        let iend = self.byte_codes.len() - 1;
+        let iend = self.fp.byte_codes.len() - 1;
         for i in jmp_ends.into_iter() {
-            self.byte_codes[i] = ByteCode::Jump((iend - i) as i16)
+            self.fp.byte_codes[i] = ByteCode::Jump((iend - i) as i16)
         }
     }
 
@@ -286,18 +294,18 @@ impl<R: Read> ParseProto<R> {
         let icond = self.exp_discharge_any();
         self.lex.expect(Token::Then);
 
-        self.byte_codes.push(ByteCode::Test(0, 0));
-        let itest = self.byte_codes.len() - 1;
+        self.fp.byte_codes.push(ByteCode::Test(0, 0));
+        let itest = self.fp.byte_codes.len() - 1;
 
         let end_token = self.block();
 
         if matches!(end_token, Token::Elseif | Token::Else) {
-            self.byte_codes.push(ByteCode::Jump(0));
-            jmp_ends.push(self.byte_codes.len() - 1);
+            self.fp.byte_codes.push(ByteCode::Jump(0));
+            jmp_ends.push(self.fp.byte_codes.len() - 1);
         }
 
-        let iend = self.byte_codes.len() - 1;
-        self.byte_codes[itest] = ByteCode::Test(icond as u8, (iend - itest) as i16);
+        let iend = self.fp.byte_codes.len() - 1;
+        self.fp.byte_codes[itest] = ByteCode::Test(icond as u8, (iend - itest) as i16);
 
         end_token
     }
@@ -305,24 +313,24 @@ impl<R: Read> ParseProto<R> {
     // BNF:
     //   while exp do block end
     fn while_stat(&mut self) {
-        let istart = self.byte_codes.len();
+        let istart = self.fp.byte_codes.len();
 
         let icond = self.exp_discharge_any();
         self.lex.expect(Token::Do);
 
-        self.byte_codes.push(ByteCode::Test(0, 0));
-        let itest = self.byte_codes.len() - 1;
+        self.fp.byte_codes.push(ByteCode::Test(0, 0));
+        let itest = self.fp.byte_codes.len() - 1;
 
         self.push_loop_block();
 
         assert_eq!(self.block(), Token::End);
 
-        let iend = self.byte_codes.len();
-        self.byte_codes.push(ByteCode::Jump(-((iend - istart) as i16) - 1));
+        let iend = self.fp.byte_codes.len();
+        self.fp.byte_codes.push(ByteCode::Jump(-((iend - istart) as i16) - 1));
 
         self.pop_loop_block(istart);
 
-        self.byte_codes[itest] = ByteCode::Test(icond as u8, (iend - istart) as i16)
+        self.fp.byte_codes[itest] = ByteCode::Test(icond as u8, (iend - istart) as i16)
     }
 
     // * numerical: for Name `=` ...
@@ -353,8 +361,8 @@ impl<R: Read> ParseProto<R> {
 
         self.lex.expect(Token::Do);
 
-        self.byte_codes.push(ByteCode::ForPrepare(0, 0));
-        let iprepare = self.byte_codes.len() - 1;
+        self.fp.byte_codes.push(ByteCode::ForPrepare(0, 0));
+        let iprepare = self.fp.byte_codes.len() - 1;
         let iname = self.sp - 3;
 
         self.push_loop_block();
@@ -365,11 +373,11 @@ impl<R: Read> ParseProto<R> {
         self.locals.pop();
         self.locals.pop();
 
-        let d = self.byte_codes.len() - iprepare;
-        self.byte_codes.push(ByteCode::ForLoop(iname as u8, d as u16));
-        self.byte_codes[iprepare] = ByteCode::ForPrepare(iname as u8, d as u16);
+        let d = self.fp.byte_codes.len() - iprepare;
+        self.fp.byte_codes.push(ByteCode::ForLoop(iname as u8, d as u16));
+        self.fp.byte_codes[iprepare] = ByteCode::ForPrepare(iname as u8, d as u16);
 
-        self.pop_loop_block(self.byte_codes.len() - 1);
+        self.pop_loop_block(self.fp.byte_codes.len() - 1);
     }
 
     // BNF:
@@ -381,19 +389,19 @@ impl<R: Read> ParseProto<R> {
     // BNF:
     //   repeat block until exp
     fn repeat_stat(&mut self) {
-        let istart = self.byte_codes.len();
+        let istart = self.fp.byte_codes.len();
 
         self.push_loop_block();
 
         let nvar = self.locals.len();
 
         assert_eq!(self.block_scope(), Token::Until);
-        let iend1 = self.byte_codes.len();
+        let iend1 = self.fp.byte_codes.len();
 
         let icond = self.exp_discharge_any();
 
-        let iend2 = self.byte_codes.len();
-        self.byte_codes.push(ByteCode::Test(icond as u8, -((iend2 - istart + 1) as i16)));
+        let iend2 = self.fp.byte_codes.len();
+        self.fp.byte_codes.push(ByteCode::Test(icond as u8, -((iend2 - istart + 1) as i16)));
 
         self.pop_loop_block(iend1);
         self.locals.truncate(nvar);
@@ -401,8 +409,8 @@ impl<R: Read> ParseProto<R> {
 
     fn break_stat(&mut self) {
         if let Some(breaks) = self.break_blocks.last_mut() {
-            self.byte_codes.push(ByteCode::Jump(0));
-            breaks.push(self.byte_codes.len() - 1);
+            self.fp.byte_codes.push(ByteCode::Jump(0));
+            breaks.push(self.fp.byte_codes.len() - 1);
         } else {
             panic!("break outside loop")
         }
@@ -413,11 +421,11 @@ impl<R: Read> ParseProto<R> {
     fn goto_stat(&mut self) {
         let name = self.read_name();
 
-        self.byte_codes.push(ByteCode::Jump(0));
+        self.fp.byte_codes.push(ByteCode::Jump(0));
 
         self.gotos.push(GotoLabel {
             name,
-            icode: self.byte_codes.len() - 1,
+            icode: self.fp.byte_codes.len() - 1,
             nvar: self.locals.len(),
         })
     }
@@ -434,7 +442,7 @@ impl<R: Read> ParseProto<R> {
 
         self.labels.push(GotoLabel {
             name,
-            icode: self.byte_codes.len(),
+            icode: self.fp.byte_codes.len(),
             nvar: self.locals.len(),
         })
     }
@@ -443,11 +451,11 @@ impl<R: Read> ParseProto<R> {
         let mut no_dsts = Vec::new();
         for goto in self.gotos.drain(igoto..) {
             if let Some(label) = self.labels.iter().rev().find(|label| label.name == goto.name) {
-                if label.icode != self.byte_codes.len() && label.nvar > goto.nvar {
+                if label.icode != self.fp.byte_codes.len() && label.nvar > goto.nvar {
                     panic!("goto jump into scope {}", goto.name);
                 }
                 let d = (label.icode as isize - goto.icode as isize) as i16;
-                self.byte_codes[goto.icode] = ByteCode::Jump(d - 1);
+                self.fp.byte_codes[goto.icode] = ByteCode::Jump(d - 1);
             } else {
                 no_dsts.push(goto);
             }
@@ -467,8 +475,8 @@ impl<R: Read> ParseProto<R> {
             }
 
             if let Some(continues) = self.continue_blocks.last_mut() {
-                self.byte_codes.push(ByteCode::Jump(0));
-                continues.push((self.byte_codes.len() - 1, self.locals.len()))
+                self.fp.byte_codes.push(ByteCode::Jump(0));
+                continues.push((self.fp.byte_codes.len() - 1, self.locals.len()))
             } else {
                 panic!("continue outside loop")
             }
@@ -485,9 +493,9 @@ impl<R: Read> ParseProto<R> {
     }
 
     fn pop_loop_block(&mut self, icontinue: usize) {
-        let iend = self.byte_codes.len() - 1;
+        let iend = self.fp.byte_codes.len() - 1;
         for i in self.break_blocks.pop().unwrap().into_iter() {
-            self.byte_codes[i] = ByteCode::Jump((iend - i) as i16);
+            self.fp.byte_codes[i] = ByteCode::Jump((iend - i) as i16);
         }
 
         let end_nvar = self.locals.len();
@@ -495,7 +503,7 @@ impl<R: Read> ParseProto<R> {
             if i_nvar < end_nvar {
                 panic!("continue jump into local scope")
             }
-            self.byte_codes[i] = ByteCode::Jump((icontinue as isize - i as isize - 1) as i16)
+            self.fp.byte_codes[i] = ByteCode::Jump((icontinue as isize - i as isize - 1) as i16)
         }
     }
 
@@ -691,7 +699,7 @@ impl<R: Read> ParseProto<R> {
             t => panic!("invalid args {t:?}"),
         };
 
-        self.byte_codes
+        self.fp.byte_codes
             .push(ByteCode::Call(ifunc as u8, argn as u8));
         ExpDesc::Call
     }
@@ -908,7 +916,7 @@ impl<R: Read> ParseProto<R> {
             ExpDesc::UnaryOp(op, i) => op(dst as u8, i as u8),
             ExpDesc::BinaryOp(op, left, right) => op(dst as u8, left as u8, right as u8),
         };
-        self.byte_codes.push(code);
+        self.fp.byte_codes.push(code);
         self.sp = dst + 1;
     }
 
@@ -950,8 +958,8 @@ impl<R: Read> ParseProto<R> {
     fn table_constructor(&mut self) -> ExpDesc {
         let table = self.sp;
         self.sp += 1;
-        let inew = self.byte_codes.len();
-        self.byte_codes.push(ByteCode::NewTable(table as u8, 0, 0));
+        let inew = self.fp.byte_codes.len();
+        self.fp.byte_codes.push(ByteCode::NewTable(table as u8, 0, 0));
 
         enum TableEntry {
             Map(
@@ -1045,7 +1053,7 @@ impl<R: Read> ParseProto<R> {
                         // value不是常量，则discharge到栈上，并使用op，如`ByteCode::SetTable`
                         ConstStack::Stack(i) => op(table as u8, key as u8, i as u8),
                     };
-                    self.byte_codes.push(code);
+                    self.fp.byte_codes.push(code);
 
                     nmap += 1;
                     self.sp = sp0;
@@ -1057,7 +1065,7 @@ impl<R: Read> ParseProto<R> {
                     narray += 1;
                     if narray % 2 == 50 {
                         // reset the array members every 50
-                        self.byte_codes.push(ByteCode::SetList(table as u8, 50));
+                        self.fp.byte_codes.push(ByteCode::SetList(table as u8, 50));
                         self.sp = table + 1;
                     }
                 }
@@ -1070,13 +1078,13 @@ impl<R: Read> ParseProto<R> {
             }
         }
         if self.sp > table + 1 {
-            self.byte_codes.push(ByteCode::SetList(
+            self.fp.byte_codes.push(ByteCode::SetList(
                 table as u8,
                 (self.sp - (table + 1)) as u8,
             ));
         }
 
-        self.byte_codes[inew] = ByteCode::NewTable(table as u8, narray, nmap);
+        self.fp.byte_codes[inew] = ByteCode::NewTable(table as u8, narray, nmap);
         self.sp = table + 1;
         ExpDesc::Local(table)
     }
@@ -1095,14 +1103,30 @@ impl<R: Read> ParseProto<R> {
 
     fn add_const(&mut self, c: impl Into<Value>) -> usize {
         let c = c.into();
-        self.constants
+        self.fp.constants
             .iter()
             .position(|v| *v == c)
             .unwrap_or_else(|| {
-                self.constants.push(c);
-                self.constants.len() - 1
+                self.fp.constants.push(c);
+                self.fp.constants.len() - 1
             })
     }
+}
+
+pub fn load(input: impl Read) -> FuncProto {
+    let mut lex = Lex::new(input);
+    chunk(&mut lex, Token::Eos)
+}
+
+fn chunk(lex: &mut Lex<impl Read>, end_token: Token) -> FuncProto {
+    let mut proto = ParseProto::new(lex);
+
+    assert_eq!(proto.block(), end_token);
+    if let Some(goto) = proto.gotos.first() {
+        panic!("goto {} no destination", &goto.name);
+    }
+
+    proto.fp
 }
 
 impl Token {

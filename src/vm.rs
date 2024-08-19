@@ -1,10 +1,14 @@
 use std::{
-    cell::RefCell, cmp::Ordering, collections::HashMap, fmt::DebugStruct, io::{Read, Write}, rc::Rc, str::SplitWhitespace
+    cell::RefCell,
+    cmp::Ordering,
+    collections::HashMap,
+    io::{Read, Write},
+    rc::Rc,
 };
 
 use crate::{
     bytecode::ByteCode,
-    parse::ParseProto,
+    parse::{FuncProto, ParseProto},
     utils::ftoi,
     value::{Table, Value},
 };
@@ -18,22 +22,24 @@ fn lib_print(state: &mut ExeState) -> i32 {
 pub struct ExeState {
     pub globals: HashMap<String, Value>,
     pub stack: Vec<Value>,
+    pub base: usize,
     pub func_index: usize,
 }
 
 impl ExeState {
     pub fn new() -> Self {
         let mut globals = HashMap::new();
-        globals.insert(String::from("print"), Value::Function(lib_print));
+        globals.insert(String::from("print"), Value::RustFunction(lib_print));
 
         ExeState {
             globals,
             stack: Vec::new(),
+            base: 0,
             func_index: 0,
         }
     }
 
-    pub fn execute<R: Read>(&mut self, proto: &ParseProto<R>) {
+    pub fn execute(&mut self, proto: &FuncProto) {
         let mut pc = 0;
         while pc < proto.byte_codes.len() {
             println!("  [{pc}]\t{:?}", proto.byte_codes[pc]);
@@ -124,12 +130,15 @@ impl ExeState {
                 }
 
                 ByteCode::Call(func, _) => {
-                    self.func_index = func as usize;
-                    let func = &self.stack[self.func_index];
-                    if let Value::Function(f) = func {
-                        f(self);
-                    } else {
-                        panic!("invalid function: {func:?}");
+                    self.base += func as usize + 1;
+                    match &self.stack[self.base - 1] {
+                        Value::RustFunction(f) => {
+                            f(self);
+                        }
+                        Value::LuaFunction(f) => {
+                            self.execute(&f.clone());
+                        }
+                        f => panic!("invalid function: {f:?}"),
                     }
                 }
 
@@ -431,7 +440,9 @@ impl ExeState {
                 }
                 ByteCode::Jump(jmp) => pc = (pc as isize + jmp as isize) as usize,
                 ByteCode::ForPrepare(dst, jmp) => {
-                    if let (&Value::Integer(mut i), &Value::Integer(step)) = (&self.stack[dst as usize], &self.stack[dst as usize + 2]) {
+                    if let (&Value::Integer(mut i), &Value::Integer(step)) =
+                        (&self.stack[dst as usize], &self.stack[dst as usize + 2])
+                    {
                         if step == 0 {
                             panic!("0 step in numerical for")
                         }
@@ -459,30 +470,27 @@ impl ExeState {
                         }
                     }
                 }
-                ByteCode::ForLoop(dst, jmp) => {
-                    match self.stack[dst as usize] {
-                        Value::Integer(i) => {
-                            let limit = self.read_int(dst + 1);
-                            let step = self.read_int(dst + 2);
-                            let i = i + step;
-                            if for_check(i, limit, step > 0) {
-                                self.set_stack(dst, Value::Integer(i));
-                                pc -= jmp as usize;
-                            }
+                ByteCode::ForLoop(dst, jmp) => match self.stack[dst as usize] {
+                    Value::Integer(i) => {
+                        let limit = self.read_int(dst + 1);
+                        let step = self.read_int(dst + 2);
+                        let i = i + step;
+                        if for_check(i, limit, step > 0) {
+                            self.set_stack(dst, Value::Integer(i));
+                            pc -= jmp as usize;
                         }
-                        Value::Float(f) => {
-                            let limit = self.read_float(dst + 1);
-                            let step = self.read_float(dst + 2);
-                            let f = f + step;
-                            if for_check(f, limit, step > 0.0) {
-                                self.set_stack(dst, Value::Float(f));
-                                pc -= jmp as usize;
-                            }
-
-                        }
-                        _ => panic!("xx")
                     }
-                }
+                    Value::Float(f) => {
+                        let limit = self.read_float(dst + 1);
+                        let step = self.read_float(dst + 2);
+                        let f = f + step;
+                        if for_check(f, limit, step > 0.0) {
+                            self.set_stack(dst, Value::Float(f));
+                            pc -= jmp as usize;
+                        }
+                    }
+                    _ => panic!("xx"),
+                },
             }
             pc += 1;
         }
@@ -496,7 +504,7 @@ impl ExeState {
                 self.set_stack(dst, Value::Float(f));
                 f
             }
-            ref v => panic!("not number {v:?}")
+            ref v => panic!("not number {v:?}"),
         }
     }
 
@@ -515,13 +523,12 @@ impl ExeState {
         }
     }
 
+    fn get_stack(&self, dst: u8) -> &Value {
+        &self.stack[self.base + dst as usize]
+    }
+
     fn set_stack(&mut self, dst: u8, value: Value) {
-        let dst = dst as usize;
-        match dst.cmp(&self.stack.len()) {
-            Ordering::Equal => self.stack.push(value),
-            Ordering::Less => self.stack[dst] = value,
-            Ordering::Greater => panic!("stack overflow"),
-        }
+        set_vec(&mut self.stack, self.base + dst as usize, value)
     }
 
     fn fill_stack(&mut self, begin: usize, num: usize) {

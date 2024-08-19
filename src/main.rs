@@ -26,6 +26,6 @@ fn main() {
 
     let file = File::open(&args[1]).unwrap();
     let input = BufReader::new(file);
-    let proto = ParseProto::load(input);
+    let proto = parse::load(input);
     vm::ExeState::new().execute(&proto);
 }

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, fmt, hash::{Hash, Hasher}, mem, rc::Rc};
 
-use crate::vm::ExeState;
+use crate::{parse::FuncProto, vm::ExeState};
 
 const SHORT_STR_MAX: usize = 16 - 1 - 1;
 const MID_STR_MAX: usize = 48 - 1;
@@ -28,7 +28,8 @@ pub enum Value{
     ShortStr(u8, [u8; SHORT_STR_MAX]),
     MidStr(Rc<(u8, [u8; MID_STR_MAX])>),
     LongStr(Rc<Vec<u8>>),
-    Function(fn (&mut ExeState) -> i32),
+    LuaFunction(Rc<FuncProto>),
+    RustFunction(fn (&mut ExeState) -> i32),
     Table(Rc<RefCell<Table>>),
 }
 
@@ -39,14 +40,15 @@ impl fmt::Debug for Value {
             Value::Boolean(b) => write!(f, "{b}"),
             Value::Integer(i) => write!(f, "{i}"),
             Value::Float(n) => write!(f, "{n:?}"),
-            Value::ShortStr(len, buf) => write!(f, "{}", String::from_utf8_lossy(&buf[..*len as usize])),
-            Value::MidStr(s) => write!(f, "{}", String::from_utf8_lossy(&s.1[..s.0 as usize])),
-            Value::LongStr(s) => write!(f, "{}", String::from_utf8_lossy(&s)),
-            Value::Function(_) => write!(f, "function"),
+            Value::ShortStr(len, buf) => write!(f, "'{}'", String::from_utf8_lossy(&buf[..*len as usize])),
+            Value::MidStr(s) => write!(f, "\"{}\"", String::from_utf8_lossy(&s.1[..s.0 as usize])),
+            Value::LongStr(s) => write!(f, "'''{}'''", String::from_utf8_lossy(s)),
             Value::Table(t) => {
                 let t = t.borrow();
                 write!(f, "table:{}:{}", t.array.len(), t.map.len())
             }
+            Value::RustFunction(_) => write!(f, "function"),
+            Value::LuaFunction(_) => write!(f, "Lua function"),
         }
     }
 }
@@ -62,16 +64,18 @@ impl fmt::Display for Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        // TODO compare Integer vs Float
         match (self, other) {
             (Value::Nil, Value::Nil) => true,
             (Value::Boolean(b1), Value::Boolean(b2)) => *b1 == *b2,
             (Value::Integer(i1), Value::Integer(i2)) => *i1 == *i2,
+            (&Value::Integer(i), &Value::Float(f)) |
+            (&Value::Float(f), &Value::Integer(i)) => i as f64 == f && i == f as i64,
             (Value::Float(f1), Value::Float(f2)) => *f1 == *f2,
             (Value::ShortStr(len1, s1), Value::ShortStr(len2, s2)) => s1[..*len1 as usize] == s2[..*len2 as usize],
             (Value::MidStr(s1), Value::MidStr(s2)) => s1.1[..s1.0 as usize] == s2.1[..s2.0 as usize],
             (Value::LongStr(s1), Value::LongStr(s2)) => s1 == s2,
-            (Value::Function(f1), Value::Function(f2)) => std::ptr::eq(f1, f2),
+            (Value::RustFunction(f1), Value::RustFunction(f2)) => std::ptr::eq(f1, f2),
+            (Value::LuaFunction(f1), Value::LuaFunction(f2)) => Rc::as_ptr(f1) == Rc::as_ptr(f2),
             (_, _) => false,
         }
     }
@@ -179,7 +183,8 @@ impl Hash for Value {
             Value::MidStr(s) => s.1[..s.0 as usize].hash(state),
             Value::LongStr(s) => s.hash(state),
             Value::Table(t) => Rc::as_ptr(t).hash(state),
-            Value::Function(f) => (*f as *const usize).hash(state),
+            Value::LuaFunction(f) => Rc::as_ptr(f).hash(state),
+            Value::RustFunction(f) => (*f as *const usize).hash(state),
         }
     }
 }
