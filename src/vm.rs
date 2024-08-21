@@ -1,9 +1,5 @@
 use std::{
-    cell::RefCell,
-    cmp::Ordering,
-    collections::HashMap,
-    io::{Read, Write},
-    rc::Rc,
+    cell::RefCell, cmp::Ordering, collections::HashMap, env::var, io::{Read, Write}, rc::Rc
 };
 
 use crate::{
@@ -40,6 +36,12 @@ impl ExeState {
     }
 
     pub fn execute(&mut self, proto: &FuncProto) {
+        let vargs = if proto.has_vargs {
+            self.stack.drain(self.base + proto.nparam ..).collect()
+        } else {
+            Vec::new()
+        };
+
         let mut pc = 0;
         while pc < proto.byte_codes.len() {
             println!("  [{pc}]\t{:?}", proto.byte_codes[pc]);
@@ -106,9 +108,14 @@ impl ExeState {
                     self.set_table(table, key, value);
                 }
                 ByteCode::SetList(table, n) => {
-                    let ivalue = table as usize + 1;
-                    if let Value::Table(table) = self.stack[table as usize].clone() {
-                        let values = self.stack.drain(ivalue..ivalue + n as usize);
+                    let ivalue = self.base + table as usize + 1;
+                    if let Value::Table(table) = self.get_stack(table).clone() {
+                        let end = if n == 0 {
+                            self.stack.len()
+                        } else {
+                            ivalue + n as usize
+                        };
+                        let values = self.stack.drain(ivalue..end);
                         table.borrow_mut().array.extend(values);
                     } else {
                         panic!("invalid table: {table:?}");
@@ -129,18 +136,46 @@ impl ExeState {
                     self.set_stack(dst, value);
                 }
 
-                ByteCode::Call(func, _) => {
+                ByteCode::Vargs(dst, want) => {
+                    self.stack.truncate(self.base + dst as usize);
+
+                    let len = vargs.len();
+                    let want = want as usize;
+                    if want == 0 {
+                        self.stack.extend_from_slice(&vargs);
+                    } else if want > len {
+                        self.stack.extend_from_slice(&vargs);
+                        self.fill_stack(dst as usize + len, want - len);
+                    } else {
+                        self.stack.extend_from_slice(&vargs[..want]);
+                    }
+                }
+                ByteCode::Call(func, narg_plus, _) => {
                     self.base += func as usize + 1;
-                    match &self.stack[self.base - 1] {
+                    match self.stack[self.base - 1].clone() {
                         Value::RustFunction(f) => {
                             f(self);
                         }
                         Value::LuaFunction(f) => {
-                            self.execute(&f.clone());
+                            let narg = if narg_plus == 0 {
+                                self.stack.len() - self.base
+                            } else {
+                                narg_plus as usize - 1
+                            };
+
+                            if narg < f.nparam {
+                                self.fill_stack(narg, f.nparam - narg);
+                            } else if f.has_vargs && narg_plus != 0 {
+                                self.stack.truncate(self.base + narg);
+                            }
+                            self.execute(&f);
                         }
                         f => panic!("invalid function: {f:?}"),
                     }
                 }
+                ByteCode::CallSet(_, _, _) => {}
+                ByteCode::Return0 => {}
+                ByteCode::Return(_, _) => {}
 
                 ByteCode::Neg(dst, src) => {
                     let value = match &self.stack[src as usize] {

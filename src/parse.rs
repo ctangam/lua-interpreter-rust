@@ -22,7 +22,9 @@ enum ExpDesc {
     IndexInt(usize, u8),
     Index(usize, usize),
 
-    Call,
+    Function(Value),
+    Call(usize, usize),
+    Vargs,
 
     UnaryOp(fn(u8, u8) -> ByteCode, usize),
     BinaryOp(fn(u8, u8, u8) -> ByteCode, usize, usize),
@@ -42,7 +44,7 @@ struct GotoLabel {
 
 #[derive(Debug)]
 pub struct FuncProto {
-    pub has_varargs: bool,
+    pub has_vargs: bool,
     pub nparam: usize,
     pub constants: Vec<Value>,
     pub byte_codes: Vec<ByteCode>,
@@ -66,7 +68,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
     pub fn new(lex: &'a mut Lex<R>, has_varargs: bool, params: Vec<String>) -> Self {
         ParseProto {
             fp: FuncProto {
-                has_varargs,
+                has_vargs: has_varargs,
                 nparam: params.len(),
                 constants: Vec::new(),
                 byte_codes: Vec::new(),
@@ -110,22 +112,23 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let ilabel = self.labels.len();
         loop {
             self.sp = self.locals.len();
-    
+
             match self.lex.next() {
                 Token::SemiColon => (),
-    
+
                 t @ Token::Name(_) | t @ Token::ParL => {
                     if self.try_continue_stat(&t) {
                         continue;
                     }
 
                     let desc = self.prefixexp(t);
-                    if desc == ExpDesc::Call {
+                    if let ExpDesc::Call(ifunc, narg_plus) = desc {
+                        self.fp.byte_codes.push(ByteCode::Call(ifunc as u8, narg_plus as u8, 0));
                     } else {
                         self.assign(desc);
                     }
                 }
-                Token::Local => self.local(),
+                Token::Local => self.local_variables(),
                 Token::If => self.if_stat(),
                 Token::While => self.while_stat(),
                 Token::For => self.for_stat(),
@@ -137,36 +140,33 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 t => {
                     self.close_goto_labels(igoto, ilabel);
                     break t;
-                },
+                }
             }
         }
     }
-    
+
     // BNF:
     //   local attnamelist [`=` explist]
     //   attnamelist ::=  Name attrib {`,` Name attrib}
-    fn local(&mut self) {
-        let mut vars = Vec::new();
-        let nexp = loop {
-            vars.push(self.read_name());
+    fn local_variables(&mut self) {
+        let mut vars = vec![self.read_name()];
+        while *self.lex.peek() == Token::Comma {
+            self.lex.next();
+            vars.push(self.read_name())
+        }
 
-            match self.lex.peek() {
-                Token::Comma => {
-                    self.lex.next();
-                }
-                Token::Assign => {
-                    self.lex.next();
-                    break self.explist();
-                }
-                _ => break 0,
+        if *self.lex.peek() == Token::Assign {
+            self.lex.next();
+
+            let want = vars.len();
+            let (nexp, last_exp) = self.explist();
+            match (nexp + 1).cmp(&want) {
+                Ordering::Equal => self.discharge(self.sp, last_exp),
+                Ordering::Less => self.discharge_expand_want(last_exp, want - nexp),
+                Ordering::Greater => self.sp -= nexp - want, 
             }
-        };
-
-        if nexp < vars.len() {
-            let ivar = self.locals.len() + nexp;
-            let nnil = vars.len() - nexp;
-            self.fp.byte_codes
-                .push(ByteCode::LoadNil(ivar as u8, nnil as u8));
+        } else {
+            self.fp.byte_codes.push(ByteCode::LoadNil(self.sp as u8, vars.len() as u8))
         }
 
         self.locals.append(&mut vars)
@@ -180,14 +180,76 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let name = self.read_name();
         println!("== function: {name}");
 
-        self.lex.expect(Token::ParL);
-        self.lex.expect(Token::ParR);
-        let proto = chunk(self.lex, false, Vec::new(), Token::End);
-
-        let i = self.add_const(Value::LuaFunction(Rc::new(proto)));
-        self.fp.byte_codes.push(ByteCode::LoadConst(self.sp as u8, i as u16));
+        let f = self.funcbody(false);
+        self.discharge(self.sp, f);
 
         self.locals.push(name);
+    }
+
+    // BNF:
+    //   function funcname funcbody
+    //   funcname = Name {`.` Name} [`:` Name]
+    fn function_stat(&mut self) {
+        let name = self.read_name();
+        let mut desc = self.simple_name(&name);
+
+        let with_self = loop {
+            match self.lex.peek() {
+                Token::Dot => {
+                    self.lex.next();
+                    let name = self.read_name();
+                    let t = self.discharge_top(desc);
+                    desc = ExpDesc::IndexField(t, self.add_const(name));
+                }
+                Token::Colon => {
+                    self.lex.next();
+                    let name = self.read_name();
+                    let t = self.discharge_top(desc);
+                    desc = ExpDesc::IndexField(t, self.add_const(name));
+
+                    break true;
+                }
+                _ => break false,
+            }
+        };
+
+        let body = self.funcbody(with_self);
+        self.assign_var(desc, body)
+    }
+
+    // BNF:
+    //   funcbody ::= `(` [parlist] `)` block end
+    //   parlist ::= namelist [`,` `...`] | `...`
+    //   namelist ::= Name {`,` Name}
+    fn funcbody(&mut self, with_self: bool) -> ExpDesc {
+        let mut has_vargs = false;
+        let mut params = Vec::new();
+        if with_self {
+            params.push(String::from("self"));
+        }
+        self.lex.expect(Token::ParL);
+        loop {
+            match self.lex.next() {
+                Token::Name(name) => {
+                    params.push(name);
+                    match self.lex.next() {
+                        Token::Comma => (),
+                        Token::ParR => break,
+                        t => panic!("invalid parameter {t:?}"),
+                    }
+                }
+                Token::Dots => {
+                    has_vargs = true;
+                    self.lex.expect(Token::ParR);
+                    break;
+                }
+                Token::ParR => break,
+                t => panic!("invalid parameter {t:?}"),
+            }
+        }
+
+        let proto = chunk(self.lex, has_vargs, params, Token::End);
+        ExpDesc::Function(Value::LuaFunction(Rc::new(proto)))
     }
 
     // BNF:
@@ -206,34 +268,26 @@ impl<'a, R: Read> ParseProto<'a, R> {
             }
         }
 
-        let exp_sp0 = self.sp;
-        let mut nfexp = 0;
-        let last_exp = loop {
-            let desc = self.exp();
+        let sp0 = self.sp;
+        let (mut nexp, last_exp) = self.explist();
 
-            if *self.lex.peek() == Token::Comma {
-                self.lex.next();
-                self.discharge(exp_sp0 + nfexp, desc);
-                nfexp += 1;
-            } else {
-                break desc;
-            }
-        };
-
-        match (nfexp + 1).cmp(&vars.len()) {
+        match (nexp + 1).cmp(&vars.len()) {
             Ordering::Equal => {
                 let last_var = vars.pop().unwrap();
                 self.assign_var(last_var, last_exp);
             }
-            Ordering::Less => todo!("expand last exps"),
+            Ordering::Less => {
+                self.discharge_expand_want(last_exp, vars.len() - nexp);
+                nexp = vars.len();
+            }
             Ordering::Greater => {
-                nfexp = vars.len();
+                nexp = vars.len();
             }
         }
 
         while let Some(var) = vars.pop() {
-            nfexp -= 1;
-            self.assign_from_stack(var, exp_sp0 + nfexp);
+            nexp -= 1;
+            self.assign_from_stack(var, sp0 + nexp);
         }
     }
 
@@ -332,7 +386,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
         assert_eq!(self.block(), Token::End);
 
         let iend = self.fp.byte_codes.len();
-        self.fp.byte_codes.push(ByteCode::Jump(-((iend - istart) as i16) - 1));
+        self.fp
+            .byte_codes
+            .push(ByteCode::Jump(-((iend - istart) as i16) - 1));
 
         self.pop_loop_block(istart);
 
@@ -355,10 +411,13 @@ impl<'a, R: Read> ParseProto<'a, R> {
     fn for_numerical(&mut self, name: String) {
         self.lex.next();
 
-        match self.explist() {
+        let (nexp, last_exp) = self.explist();
+        self.discharge(self.sp, last_exp);
+
+        match nexp + 1 {
             2 => self.discharge(self.sp, ExpDesc::Integer(1)),
             3 => (),
-            _ => panic!("invalid numerical for exp")
+            _ => panic!("invalid numerical for exp"),
         }
 
         self.locals.push(name);
@@ -380,7 +439,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
         self.locals.pop();
 
         let d = self.fp.byte_codes.len() - iprepare;
-        self.fp.byte_codes.push(ByteCode::ForLoop(iname as u8, d as u16));
+        self.fp
+            .byte_codes
+            .push(ByteCode::ForLoop(iname as u8, d as u16));
         self.fp.byte_codes[iprepare] = ByteCode::ForPrepare(iname as u8, d as u16);
 
         self.pop_loop_block(self.fp.byte_codes.len() - 1);
@@ -407,7 +468,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let icond = self.exp_discharge_any();
 
         let iend2 = self.fp.byte_codes.len();
-        self.fp.byte_codes.push(ByteCode::Test(icond as u8, -((iend2 - istart + 1) as i16)));
+        self.fp
+            .byte_codes
+            .push(ByteCode::Test(icond as u8, -((iend2 - istart + 1) as i16)));
 
         self.pop_loop_block(iend1);
         self.locals.truncate(nvar);
@@ -456,7 +519,12 @@ impl<'a, R: Read> ParseProto<'a, R> {
     fn close_goto_labels(&mut self, igoto: usize, ilabel: usize) {
         let mut no_dsts = Vec::new();
         for goto in self.gotos.drain(igoto..) {
-            if let Some(label) = self.labels.iter().rev().find(|label| label.name == goto.name) {
+            if let Some(label) = self
+                .labels
+                .iter()
+                .rev()
+                .find(|label| label.name == goto.name)
+            {
                 if label.icode != self.fp.byte_codes.len() && label.nvar > goto.nvar {
                     panic!("goto jump into scope {}", goto.name);
                 }
@@ -514,19 +582,19 @@ impl<'a, R: Read> ParseProto<'a, R> {
     }
 
     // explist ::= exp {`,` exp}
-    fn explist(&mut self) -> usize {
+    fn explist(&mut self) -> (usize, ExpDesc) {
         let mut n = 0;
         let sp0 = self.sp;
         loop {
             let desc = self.exp();
+            if *self.lex.peek() != Token::Comma {
+                self.sp = sp0 + n;
+                return (n, desc)
+            }
+            self.lex.next();
+
             self.discharge(sp0 + n, desc);
             n += 1;
-
-            if self.lex.peek() != &Token::Comma {
-                return n;
-            }
-
-            self.lex.next();
         }
     }
 
@@ -670,7 +738,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 Token::ParL | Token::CurlyL | Token::String(_) => {
                     // args
                     self.discharge(sp0, desc);
-                    desc = self.args();
+                    desc = self.args(0);
                 }
                 _ => {
                     // Epsilon
@@ -681,33 +749,41 @@ impl<'a, R: Read> ParseProto<'a, R> {
     }
 
     // args ::= `(` [explist] `)` | tableconstructor | LiteralString
-    fn args(&mut self) -> ExpDesc {
-        let ifunc = self.sp - 1;
-        let argn = match self.lex.next() {
+    fn args(&mut self, implicit_argn: usize) -> ExpDesc {
+        let ifunc = self.sp - 1 - implicit_argn;
+        let narg = match self.lex.next() {
             Token::ParL => {
                 if *self.lex.peek() != Token::ParR {
-                    let argn = self.explist();
+                    let (nexp, last_exp) = self.explist();
                     self.lex.expect(Token::ParR);
-                    argn
+                    if self.discharge_expand(last_exp) {
+                        None
+                    } else {
+                        Some(nexp + 1)
+                    }
                 } else {
                     self.lex.next();
-                    0
+                    Some(0)
                 }
             }
             Token::CurlyL => {
                 self.table_constructor();
-                1
+                Some(1)
             }
             Token::String(s) => {
                 self.discharge(ifunc + 1, ExpDesc::String(s));
-                1
+                Some(1)
             }
             t => panic!("invalid args {t:?}"),
         };
 
-        self.fp.byte_codes
-            .push(ByteCode::Call(ifunc as u8, argn as u8));
-        ExpDesc::Call
+        let narg_plus = if let Some(n) = narg {
+            n + implicit_argn + 1
+        } else {
+            0
+        };
+
+        ExpDesc::Call(ifunc, narg_plus)
     }
 
     fn simple_name(&mut self, name: &str) -> ExpDesc {
@@ -917,7 +993,11 @@ impl<'a, R: Read> ParseProto<'a, R> {
             ExpDesc::IndexInt(itable, ikey) => ByteCode::GetInt(dst as u8, itable as u8, ikey),
             ExpDesc::Index(itable, ikey) => ByteCode::GetTable(dst as u8, itable as u8, ikey as u8),
 
-            ExpDesc::Call => todo!("discharge Call"),
+            ExpDesc::Vargs => ByteCode::Vargs(dst as u8, 1),
+            ExpDesc::Function(f) => ByteCode::LoadConst(dst as u8, self.add_const(f) as u16),
+            ExpDesc::Call(ifunc, narg_plus) => {
+                ByteCode::CallSet(dst as u8, ifunc as u8, narg_plus as u8)
+            }
 
             ExpDesc::UnaryOp(op, i) => op(dst as u8, i as u8),
             ExpDesc::BinaryOp(op, left, right) => op(dst as u8, left as u8, right as u8),
@@ -957,6 +1037,35 @@ impl<'a, R: Read> ParseProto<'a, R> {
         }
     }
 
+    fn discharge_expand_want(&mut self, desc: ExpDesc, want: usize) {
+        debug_assert!(want > 1);
+        let code = match desc {
+            ExpDesc::Call(ifunc, narg_plus) => {
+                ByteCode::Call(ifunc as u8, narg_plus as u8, want as u8)
+            }
+            ExpDesc::Vargs => ByteCode::Vargs(self.sp as u8, want as u8),
+            _ => {
+                self.discharge(self.sp, desc);
+                ByteCode::LoadNil(self.sp as u8, want as u8 - 1)
+            }
+        };
+        self.fp.byte_codes.push(code)
+    }
+
+    fn discharge_expand(&mut self, desc: ExpDesc) -> bool {
+        let code = match desc {
+            ExpDesc::Call(ifunc, narg_plus) => ByteCode::Call(ifunc as u8, narg_plus as u8, 0),
+            ExpDesc::Vargs => ByteCode::Vargs(self.sp as u8, 0),
+            _ => {
+                self.discharge(self.sp, desc);
+                return false;
+            }
+        };
+
+        self.fp.byte_codes.push(code);
+        true
+    }
+
     // tableconstructor ::= ‘{’ [fieldlist] ‘}’
     // fieldlist ::= field {fieldsep field} [fieldsep]
     // field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
@@ -965,7 +1074,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let table = self.sp;
         self.sp += 1;
         let inew = self.fp.byte_codes.len();
-        self.fp.byte_codes.push(ByteCode::NewTable(table as u8, 0, 0));
+        self.fp
+            .byte_codes
+            .push(ByteCode::NewTable(table as u8, 0, 0));
 
         enum TableEntry {
             Map(
@@ -977,6 +1088,8 @@ impl<'a, R: Read> ParseProto<'a, R> {
             ),
             Array(ExpDesc),
         }
+
+        let mut last_array_entry = None;
 
         let mut narray = 0;
         let mut nmap = 0;
@@ -1066,13 +1179,15 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 }
 
                 TableEntry::Array(desc) => {
-                    self.discharge(sp0, desc);
+                    if let Some(last) = last_array_entry.replace(desc) {
+                        self.discharge(sp0, last);
 
-                    narray += 1;
-                    if narray % 2 == 50 {
-                        // reset the array members every 50
-                        self.fp.byte_codes.push(ByteCode::SetList(table as u8, 50));
-                        self.sp = table + 1;
+                        narray += 1;
+                        if narray % 2 == 50 {
+                            // reset the array members every 50
+                            self.fp.byte_codes.push(ByteCode::SetList(table as u8, 50));
+                            self.sp = table + 1;
+                        }
                     }
                 }
             }
@@ -1083,11 +1198,15 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 t => panic!("invalid table {t:?}"),
             }
         }
-        if self.sp > table + 1 {
-            self.fp.byte_codes.push(ByteCode::SetList(
-                table as u8,
-                (self.sp - (table + 1)) as u8,
-            ));
+
+        if let Some(last) = last_array_entry {
+            let num = if self.discharge_expand(last) {
+                0
+            } else {
+                narray += 1;
+                (self.sp - (table + 1)) as u8
+            };
+            self.fp.byte_codes.push(ByteCode::SetList(table as u8, num));
         }
 
         self.fp.byte_codes[inew] = ByteCode::NewTable(table as u8, narray, nmap);
@@ -1109,7 +1228,8 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
     fn add_const(&mut self, c: impl Into<Value>) -> usize {
         let c = c.into();
-        self.fp.constants
+        self.fp
+            .constants
             .iter()
             .position(|v| *v == c)
             .unwrap_or_else(|| {
@@ -1124,8 +1244,13 @@ pub fn load(input: impl Read) -> FuncProto {
     chunk(&mut lex, false, Vec::new(), Token::Eos)
 }
 
-fn chunk(lex: &mut Lex<impl Read>, has_varargs: bool, params: Vec<String>, end_token: Token) -> FuncProto {
-    let mut proto = ParseProto::new(lex, has_varargs, params);
+fn chunk(
+    lex: &mut Lex<impl Read>,
+    has_vargs: bool,
+    params: Vec<String>,
+    end_token: Token,
+) -> FuncProto {
+    let mut proto = ParseProto::new(lex, has_vargs, params);
 
     assert_eq!(proto.block(), end_token);
     if let Some(goto) = proto.gotos.first() {
