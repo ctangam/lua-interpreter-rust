@@ -176,6 +176,7 @@ impl ExeState {
                 ByteCode::CallSet(_, _, _) => {}
                 ByteCode::Return0 => {}
                 ByteCode::Return(_, _) => {}
+                ByteCode::TailCall(_, _) => {}
 
                 ByteCode::Neg(dst, src) => {
                     let value = match &self.stack[src as usize] {

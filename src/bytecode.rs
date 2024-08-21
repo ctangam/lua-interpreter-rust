@@ -33,6 +33,7 @@ pub enum ByteCode {
     CallSet(u8, u8, u8),
     Return0,
     Return(u8, u8),
+    TailCall(u8, u8),
 
     Neg(u8, u8),
     Not(u8, u8),

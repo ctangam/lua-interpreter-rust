@@ -253,6 +253,49 @@ impl<'a, R: Read> ParseProto<'a, R> {
     }
 
     // BNF:
+    //   retstat ::= return [explist] [‘;’]
+    fn ret_stat(&mut self) {
+        let code = match self.lex.peek() {
+            Token::SemiColon => {
+                self.lex.next();
+                ByteCode::Return0
+            }
+            t if is_block_end(t) => ByteCode::Return0,
+            _ => {
+                let iret = self.sp;
+                let (nexp, last_exp) = self.explist();
+
+                if *self.lex.peek() == Token::SemiColon {
+                    self.lex.next();
+                }
+
+                if !is_block_end(self.lex.peek()) {
+                    panic!("'end' expected");
+                }
+
+                if let (0, &ExpDesc::Local(i)) = (nexp, &last_exp) {
+                    // only 1 return value, so NOT need discharging all values to
+                    // stack top for continuity
+                    ByteCode::Return(i as u8, 1)
+
+                } else if let (0, &ExpDesc::Call(func, narg_plus)) = (nexp, &last_exp) {
+                    // tail call
+                    ByteCode::TailCall(func as u8, narg_plus as u8)
+
+                } else if self.discharge_expand(last_exp) {
+                    // return variable values
+                    ByteCode::Return(iret as u8, 0)
+
+                } else {
+                    // return fixed values
+                    ByteCode::Return(iret as u8, nexp as u8 + 1)
+                }
+            }
+        };
+        self.fp.byte_codes.push(code)
+    }
+
+    // BNF:
     //   varlist = explist
     //   varlist ::= var {`,` var}
     fn assign(&mut self, first_var: ExpDesc) {
@@ -1359,4 +1402,8 @@ fn do_fold_const_float(
         (_, _) => return None,
     };
     Some(ExpDesc::Float(arith_f(f1, f2)))
+}
+
+fn is_block_end(t: &Token) -> bool {
+    matches!(t, Token::End | Token::Elseif | Token::Else | Token::Until | Token::Eos)
 }
