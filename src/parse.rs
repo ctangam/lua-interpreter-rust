@@ -123,7 +123,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
                     let desc = self.prefixexp(t);
                     if let ExpDesc::Call(ifunc, narg_plus) = desc {
-                        self.fp.byte_codes.push(ByteCode::Call(ifunc as u8, narg_plus as u8, 0));
+                        self.fp
+                            .byte_codes
+                            .push(ByteCode::Call(ifunc as u8, narg_plus as u8, 0));
                     } else {
                         self.assign(desc);
                     }
@@ -163,10 +165,12 @@ impl<'a, R: Read> ParseProto<'a, R> {
             match (nexp + 1).cmp(&want) {
                 Ordering::Equal => self.discharge(self.sp, last_exp),
                 Ordering::Less => self.discharge_expand_want(last_exp, want - nexp),
-                Ordering::Greater => self.sp -= nexp - want, 
+                Ordering::Greater => self.sp -= nexp - want,
             }
         } else {
-            self.fp.byte_codes.push(ByteCode::LoadNil(self.sp as u8, vars.len() as u8))
+            self.fp
+                .byte_codes
+                .push(ByteCode::LoadNil(self.sp as u8, vars.len() as u8))
         }
 
         self.locals.append(&mut vars)
@@ -277,15 +281,12 @@ impl<'a, R: Read> ParseProto<'a, R> {
                     // only 1 return value, so NOT need discharging all values to
                     // stack top for continuity
                     ByteCode::Return(i as u8, 1)
-
                 } else if let (0, &ExpDesc::Call(func, narg_plus)) = (nexp, &last_exp) {
                     // tail call
                     ByteCode::TailCall(func as u8, narg_plus as u8)
-
                 } else if self.discharge_expand(last_exp) {
                     // return variable values
                     ByteCode::Return(iret as u8, 0)
-
                 } else {
                     // return fixed values
                     ByteCode::Return(iret as u8, nexp as u8 + 1)
@@ -632,7 +633,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
             let desc = self.exp();
             if *self.lex.peek() != Token::Comma {
                 self.sp = sp0 + n;
-                return (n, desc)
+                return (n, desc);
             }
             self.lex.next();
 
@@ -1300,6 +1301,8 @@ fn chunk(
         panic!("goto {} no destination", &goto.name);
     }
 
+    proto.fp.byte_codes.push(ByteCode::Return0);
+
     proto.fp
 }
 
@@ -1405,5 +1408,8 @@ fn do_fold_const_float(
 }
 
 fn is_block_end(t: &Token) -> bool {
-    matches!(t, Token::End | Token::Elseif | Token::Else | Token::Until | Token::Eos)
+    matches!(
+        t,
+        Token::End | Token::Elseif | Token::Else | Token::Until | Token::Eos
+    )
 }

@@ -1,5 +1,10 @@
 use std::{
-    cell::RefCell, cmp::Ordering, collections::HashMap, env::var, io::{Read, Write}, rc::Rc
+    cell::RefCell,
+    cmp::Ordering,
+    collections::HashMap,
+    env::var,
+    io::{Read, Write},
+    rc::Rc,
 };
 
 use crate::{
@@ -35,15 +40,15 @@ impl ExeState {
         }
     }
 
-    pub fn execute(&mut self, proto: &FuncProto) {
+    pub fn execute(&mut self, proto: &FuncProto) -> usize {
         let vargs = if proto.has_vargs {
-            self.stack.drain(self.base + proto.nparam ..).collect()
+            self.stack.drain(self.base + proto.nparam..).collect()
         } else {
             Vec::new()
         };
 
         let mut pc = 0;
-        while pc < proto.byte_codes.len() {
+        loop {
             println!("  [{pc}]\t{:?}", proto.byte_codes[pc]);
             match proto.byte_codes[pc] {
                 ByteCode::GetGlobal(dst, idx) => {
@@ -150,33 +155,40 @@ impl ExeState {
                         self.stack.extend_from_slice(&vargs[..want]);
                     }
                 }
-                ByteCode::Call(func, narg_plus, _) => {
-                    self.base += func as usize + 1;
-                    match self.stack[self.base - 1].clone() {
-                        Value::RustFunction(f) => {
-                            f(self);
-                        }
-                        Value::LuaFunction(f) => {
-                            let narg = if narg_plus == 0 {
-                                self.stack.len() - self.base
-                            } else {
-                                narg_plus as usize - 1
-                            };
+                ByteCode::Call(func, narg_plus, want_nret) => {
+                    let nret = self.call_function(func, narg_plus);
 
-                            if narg < f.nparam {
-                                self.fill_stack(narg, f.nparam - narg);
-                            } else if f.has_vargs && narg_plus != 0 {
-                                self.stack.truncate(self.base + narg);
-                            }
-                            self.execute(&f);
-                        }
-                        f => panic!("invalid function: {f:?}"),
+                    self.stack
+                        .drain(self.base + func as usize..self.stack.len() - nret);
+
+                    let want_nret = want_nret as usize;
+                    if nret < want_nret {
+                        self.fill_stack(nret, want_nret - nret)
                     }
                 }
-                ByteCode::CallSet(_, _, _) => {}
-                ByteCode::Return0 => {}
-                ByteCode::Return(_, _) => {}
+                ByteCode::CallSet(dst, func, narg) => {
+                    let nret = self.call_function(func, narg);
+
+                    if nret == 0 {
+                        self.set_stack(dst, Value::Nil)
+                    } else {
+                        let iret = self.stack.len() - nret;
+                        self.stack.swap(self.base + dst as usize, iret);
+                    }
+
+                    self.stack.truncate(self.base + func as usize + 1)
+                }
                 ByteCode::TailCall(_, _) => {}
+                ByteCode::Return(iret, nret) => {
+                    let iret = self.base + iret as usize;
+                    if nret == 0 {
+                        return self.stack.len() - iret;
+                    } else {
+                        self.stack.truncate(iret + nret as usize);
+                        return nret as usize;
+                    }
+                }
+                ByteCode::Return0 => return 0,
 
                 ByteCode::Neg(dst, src) => {
                     let value = match &self.stack[src as usize] {
@@ -532,6 +544,39 @@ impl ExeState {
         }
     }
 
+    fn call_function(&mut self, func: u8, narg_plus: u8) -> usize {
+        self.base += func as usize + 1;
+        let nret = self.do_call_function(narg_plus);
+        self.base -= func as usize + 1;
+        nret
+    }
+
+    fn do_call_function(&mut self, narg_plus: u8) -> usize {
+        match self.stack[self.base - 1].clone() {
+            Value::RustFunction(f) => {
+                if narg_plus != 0 {
+                    self.stack.truncate(self.base + narg_plus as usize - 1);
+                }
+                f(self) as usize
+            }
+            Value::LuaFunction(f) => {
+                let narg = if narg_plus == 0 {
+                    self.stack.len() - self.base
+                } else {
+                    narg_plus as usize - 1
+                };
+
+                if narg < f.nparam {
+                    self.fill_stack(narg, f.nparam - narg);
+                } else if f.has_vargs && narg_plus != 0 {
+                    self.stack.truncate(self.base + narg);
+                }
+                self.execute(&f)
+            }
+            f => panic!("invalid function: {f:?}"),
+        }
+    }
+
     fn make_float(&mut self, dst: u8) -> f64 {
         match self.stack[dst as usize] {
             Value::Float(f) => f,
@@ -568,6 +613,7 @@ impl ExeState {
     }
 
     fn fill_stack(&mut self, begin: usize, num: usize) {
+        let begin = self.base + begin;
         let end = begin + num;
         let len = self.stack.len();
         if begin < len {
