@@ -15,6 +15,9 @@ use crate::{
 };
 
 fn lib_print(state: &mut ExeState) -> i32 {
+    for (i, v) in state.stack.iter().enumerate() {
+        println!("({i})\t{v:?}")
+    }
     let narg = state.get_top();
     for i in 0..narg {
         if i != 0 {
@@ -178,8 +181,8 @@ impl ExeState {
                         self.fill_stack(nret, want_nret - nret)
                     }
                 }
-                ByteCode::CallSet(dst, func, narg) => {
-                    let nret = self.call_function(func, narg);
+                ByteCode::CallSet(dst, func, narg_plus) => {
+                    let nret = self.call_function(func, narg_plus);
 
                     if nret == 0 {
                         self.set_stack(dst, Value::Nil)

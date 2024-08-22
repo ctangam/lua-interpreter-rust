@@ -1,5 +1,6 @@
-function f(n)
-    if n > 10000 then return n end
-    return f(n+1)
+local function f(a, b)
+    print(a+b)
 end
-print(f(0))
+
+f(1,2)
+f(100,200)

@@ -139,7 +139,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 }
                 Token::Function => self.function_stat(),
                 Token::Return => self.ret_stat(),
-                
+
                 Token::If => self.if_stat(),
                 Token::While => self.while_stat(),
                 Token::For => self.for_stat(),
@@ -688,9 +688,14 @@ impl<'a, R: Read> ParseProto<'a, R> {
             Token::Float(f) => ExpDesc::Float(f),
             Token::String(s) => ExpDesc::String(s),
 
-            Token::Function => todo!("function"),
+            Token::Function => self.funcbody(false),
             Token::CurlyL => self.table_constructor(),
-            Token::Dots => todo!("dots"),
+            Token::Dots => {
+                if !self.fp.has_vargs {
+                    panic!("no vargs")
+                }
+                ExpDesc::Vargs
+            }
 
             Token::Sub => self.unop_neg(),
             Token::Not => self.unop_not(),
