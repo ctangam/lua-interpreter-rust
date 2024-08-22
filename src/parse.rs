@@ -130,7 +130,16 @@ impl<'a, R: Read> ParseProto<'a, R> {
                         self.assign(desc);
                     }
                 }
-                Token::Local => self.local_variables(),
+                Token::Local => {
+                    if *self.lex.peek() == Token::Function {
+                        self.local_function()
+                    } else {
+                        self.local_variables()
+                    }
+                }
+                Token::Function => self.function_stat(),
+                Token::Return => self.ret_stat(),
+                
                 Token::If => self.if_stat(),
                 Token::While => self.while_stat(),
                 Token::For => self.for_stat(),

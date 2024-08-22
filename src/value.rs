@@ -33,6 +33,27 @@ pub enum Value{
     Table(Rc<RefCell<Table>>),
 }
 
+impl Value {
+    pub fn same(&self, other: &Self) -> bool {
+        // eliminate Integer and Float with same number value
+        mem::discriminant(self) == mem::discriminant(other) && self == other
+    }
+    pub fn ty(&self) -> &'static str {
+        match self {
+            &Value::Nil => "nil",
+            &Value::Boolean(_) => "boolean",
+            &Value::Integer(_) => "number",
+            &Value::Float(_) => "number",
+            &Value::ShortStr(_, _) => "string",
+            &Value::MidStr(_) => "string",
+            &Value::LongStr(_) => "string",
+            &Value::Table(_) => "table",
+            &Value::RustFunction(_) => "function",
+            &Value::LuaFunction(_) => "function",
+        }
+    }
+}
+
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match self {

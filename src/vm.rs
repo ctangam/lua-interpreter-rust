@@ -9,14 +9,27 @@ use std::{
 
 use crate::{
     bytecode::ByteCode,
-    parse::{FuncProto, ParseProto},
+    parse::FuncProto,
     utils::ftoi,
     value::{Table, Value},
 };
 
 fn lib_print(state: &mut ExeState) -> i32 {
-    println!("{:?}", state.stack[state.func_index + 1]);
+    let narg = state.get_top();
+    for i in 0..narg {
+        if i != 0 {
+            print!("\t")
+        }
+        print!("{}", state.get::<&Value>(i).to_string());
+    }
+    println!("");
     0
+}
+
+fn lib_type(state: &mut ExeState) -> i32 {
+    let ty = state.get::<&Value>(1).ty();
+    state.push(ty);
+    1
 }
 
 #[derive(Debug)]
@@ -24,19 +37,18 @@ pub struct ExeState {
     pub globals: HashMap<String, Value>,
     pub stack: Vec<Value>,
     pub base: usize,
-    pub func_index: usize,
 }
 
 impl ExeState {
     pub fn new() -> Self {
         let mut globals = HashMap::new();
-        globals.insert(String::from("print"), Value::RustFunction(lib_print));
+        globals.insert("print".into(), Value::RustFunction(lib_print));
+        globals.insert("type".into(), Value::RustFunction(lib_type));
 
         ExeState {
             globals,
             stack: Vec::new(),
-            base: 0,
-            func_index: 0,
+            base: 1,
         }
     }
 
@@ -58,7 +70,7 @@ impl ExeState {
                 }
                 ByteCode::SetGlobal(dst, src) => {
                     let key = &proto.constants[dst as usize];
-                    let new_value = self.stack[src as usize].clone();
+                    let new_value = self.get_stack(src).clone();
                     self.globals.insert(key.into(), new_value);
                 }
 
@@ -75,7 +87,7 @@ impl ExeState {
                 ByteCode::LoadBool(dst, b) => self.set_stack(dst, Value::Boolean(b)),
                 ByteCode::LoadInt(dst, i) => self.set_stack(dst, Value::Integer(i as i64)),
                 ByteCode::Move(dst, src) => {
-                    let value = self.stack[src as usize].clone();
+                    let value = self.get_stack(src).clone();
                     self.set_stack(dst, value);
                 }
 
@@ -84,7 +96,7 @@ impl ExeState {
                     self.set_stack(dst, Value::Table(Rc::new(RefCell::new(table))));
                 }
                 ByteCode::SetInt(table, key, value) => {
-                    let value = self.stack[value as usize].clone();
+                    let value = self.get_stack(value).clone();
                     self.set_table_int(table, key as i64, value);
                 }
                 ByteCode::SetIntConst(table, key, value) => {
@@ -93,7 +105,7 @@ impl ExeState {
                 }
                 ByteCode::SetField(table, key, value) => {
                     let key = proto.constants[key as usize].clone();
-                    let value = self.stack[value as usize].clone();
+                    let value = self.get_stack(value).clone();
                     self.set_table(table, key, value);
                 }
                 ByteCode::SetFieldConst(table, key, value) => {
@@ -103,12 +115,12 @@ impl ExeState {
                 }
 
                 ByteCode::SetTable(table, key, value) => {
-                    let key = self.stack[key as usize].clone();
-                    let value = self.stack[value as usize].clone();
+                    let key = self.get_stack(key).clone();
+                    let value = self.get_stack(value).clone();
                     self.set_table(table, key, value);
                 }
                 ByteCode::SetTableConst(table, key, value) => {
-                    let key = self.stack[key as usize].clone();
+                    let key = self.get_stack(key).clone();
                     let value = proto.constants[value as usize].clone();
                     self.set_table(table, key, value);
                 }
@@ -136,7 +148,7 @@ impl ExeState {
                     self.set_stack(dst, value);
                 }
                 ByteCode::GetTable(dst, table, key) => {
-                    let key = &self.stack[key as usize];
+                    let key = &self.get_stack(key);
                     let value = self.get_table(table, key);
                     self.set_stack(dst, value);
                 }
@@ -178,7 +190,10 @@ impl ExeState {
 
                     self.stack.truncate(self.base + func as usize + 1)
                 }
-                ByteCode::TailCall(_, _) => {}
+                ByteCode::TailCall(func, narg_plus) => {
+                    self.stack.drain(self.base - 1..self.base + func as usize);
+                    return self.do_call_function(narg_plus);
+                }
                 ByteCode::Return(iret, nret) => {
                     let iret = self.base + iret as usize;
                     if nret == 0 {
@@ -191,7 +206,7 @@ impl ExeState {
                 ByteCode::Return0 => return 0,
 
                 ByteCode::Neg(dst, src) => {
-                    let value = match &self.stack[src as usize] {
+                    let value = match &self.get_stack(src) {
                         Value::Integer(i) => Value::Integer(-i),
                         Value::Float(f) => Value::Float(-f),
                         _ => panic!("invalid -"),
@@ -199,7 +214,7 @@ impl ExeState {
                     self.set_stack(dst, value);
                 }
                 ByteCode::Not(dst, src) => {
-                    let value = match &self.stack[src as usize] {
+                    let value = match &self.get_stack(src) {
                         Value::Nil => Value::Boolean(true),
                         Value::Boolean(b) => Value::Boolean(!b),
                         _ => Value::Boolean(false),
@@ -207,14 +222,14 @@ impl ExeState {
                     self.set_stack(dst, value);
                 }
                 ByteCode::BitNot(dst, src) => {
-                    let value = match &self.stack[src as usize] {
+                    let value = match &self.get_stack(src) {
                         Value::Integer(i) => Value::Integer(!i),
                         _ => panic!("invalid ~"),
                     };
                     self.set_stack(dst, value);
                 }
                 ByteCode::Len(dst, src) => {
-                    let value = match &self.stack[src as usize] {
+                    let value = match &self.get_stack(src) {
                         Value::ShortStr(len, _) => Value::Integer(*len as i64),
                         Value::MidStr(s) => Value::Integer(s.0 as i64),
                         Value::LongStr(s) => Value::Integer(s.len() as i64),
@@ -226,8 +241,8 @@ impl ExeState {
 
                 ByteCode::Add(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
-                        &self.stack[b as usize],
+                        &self.get_stack(a),
+                        &self.get_stack(b),
                         |a, b| a + b,
                         |a, b| a + b,
                     );
@@ -235,7 +250,7 @@ impl ExeState {
                 }
                 ByteCode::AddConst(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
+                        &self.get_stack(a),
                         &proto.constants[b as usize],
                         |a, b| a + b,
                         |a, b| a + b,
@@ -243,13 +258,13 @@ impl ExeState {
                     self.set_stack(dst, r);
                 }
                 ByteCode::AddInt(dst, a, i) => {
-                    let r = exe_binop_int(&self.stack[a as usize], i, |a, b| a + b, |a, b| a + b);
+                    let r = exe_binop_int(&self.get_stack(a), i, |a, b| a + b, |a, b| a + b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::Sub(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
-                        &self.stack[b as usize],
+                        &self.get_stack(a),
+                        &self.get_stack(b),
                         |a, b| a - b,
                         |a, b| a - b,
                     );
@@ -257,7 +272,7 @@ impl ExeState {
                 }
                 ByteCode::SubConst(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
+                        &self.get_stack(a),
                         &proto.constants[b as usize],
                         |a, b| a - b,
                         |a, b| a - b,
@@ -265,13 +280,13 @@ impl ExeState {
                     self.set_stack(dst, r);
                 }
                 ByteCode::SubInt(dst, a, i) => {
-                    let r = exe_binop_int(&self.stack[a as usize], i, |a, b| a - b, |a, b| a - b);
+                    let r = exe_binop_int(&self.get_stack(a), i, |a, b| a - b, |a, b| a - b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::Mul(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
-                        &self.stack[b as usize],
+                        &self.get_stack(a),
+                        &self.get_stack(b),
                         |a, b| a * b,
                         |a, b| a * b,
                     );
@@ -279,7 +294,7 @@ impl ExeState {
                 }
                 ByteCode::MulConst(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
+                        &self.get_stack(a),
                         &proto.constants[b as usize],
                         |a, b| a * b,
                         |a, b| a * b,
@@ -287,13 +302,13 @@ impl ExeState {
                     self.set_stack(dst, r);
                 }
                 ByteCode::MulInt(dst, a, i) => {
-                    let r = exe_binop_int(&self.stack[a as usize], i, |a, b| a * b, |a, b| a * b);
+                    let r = exe_binop_int(&self.get_stack(a), i, |a, b| a * b, |a, b| a * b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::Mod(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
-                        &self.stack[b as usize],
+                        &self.get_stack(a),
+                        &self.get_stack(b),
                         |a, b| a % b,
                         |a, b| a % b,
                     );
@@ -301,7 +316,7 @@ impl ExeState {
                 }
                 ByteCode::ModConst(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
+                        &self.get_stack(a),
                         &proto.constants[b as usize],
                         |a, b| a % b,
                         |a, b| a % b,
@@ -309,13 +324,13 @@ impl ExeState {
                     self.set_stack(dst, r);
                 }
                 ByteCode::ModInt(dst, a, i) => {
-                    let r = exe_binop_int(&self.stack[a as usize], i, |a, b| a % b, |a, b| a % b);
+                    let r = exe_binop_int(&self.get_stack(a), i, |a, b| a % b, |a, b| a % b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::Idiv(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
-                        &self.stack[b as usize],
+                        &self.get_stack(a),
+                        &self.get_stack(b),
                         |a, b| a / b,
                         |a, b| a / b,
                     );
@@ -323,7 +338,7 @@ impl ExeState {
                 }
                 ByteCode::IdivConst(dst, a, b) => {
                     let r = exe_binop(
-                        &self.stack[a as usize],
+                        &self.get_stack(a),
                         &proto.constants[b as usize],
                         |a, b| a / b,
                         |a, b| a / b,
@@ -331,157 +346,129 @@ impl ExeState {
                     self.set_stack(dst, r);
                 }
                 ByteCode::IdivInt(dst, a, i) => {
-                    let r = exe_binop_int(&self.stack[a as usize], i, |a, b| a / b, |a, b| a / b);
+                    let r = exe_binop_int(&self.get_stack(a), i, |a, b| a / b, |a, b| a / b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::Div(dst, a, b) => {
+                    let r = exe_binop_f(&self.get_stack(a), &self.get_stack(b), |a, b| a / b);
+                    self.set_stack(dst, r);
+                }
+                ByteCode::DivConst(dst, a, b) => {
                     let r =
-                        exe_binop_f(&self.stack[a as usize], &self.stack[b as usize], |a, b| {
+                        exe_binop_f(&self.get_stack(a), &proto.constants[b as usize], |a, b| {
                             a / b
                         });
                     self.set_stack(dst, r);
                 }
-                ByteCode::DivConst(dst, a, b) => {
-                    let r = exe_binop_f(
-                        &self.stack[a as usize],
-                        &proto.constants[b as usize],
-                        |a, b| a / b,
-                    );
-                    self.set_stack(dst, r);
-                }
                 ByteCode::DivInt(dst, a, i) => {
-                    let r = exe_binop_int_f(&self.stack[a as usize], i, |a, b| a / b);
+                    let r = exe_binop_int_f(&self.get_stack(a), i, |a, b| a / b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::Pow(dst, a, b) => {
+                    let r = exe_binop_f(&self.get_stack(a), &self.get_stack(b), |a, b| a.powf(b));
+                    self.set_stack(dst, r);
+                }
+                ByteCode::PowConst(dst, a, b) => {
                     let r =
-                        exe_binop_f(&self.stack[a as usize], &self.stack[b as usize], |a, b| {
+                        exe_binop_f(&self.get_stack(a), &proto.constants[b as usize], |a, b| {
                             a.powf(b)
                         });
                     self.set_stack(dst, r);
                 }
-                ByteCode::PowConst(dst, a, b) => {
-                    let r = exe_binop_f(
-                        &self.stack[a as usize],
-                        &proto.constants[b as usize],
-                        |a, b| a.powf(b),
-                    );
-                    self.set_stack(dst, r);
-                }
                 ByteCode::PowInt(dst, a, i) => {
-                    let r = exe_binop_int_f(&self.stack[a as usize], i, |a, b| a.powf(b));
+                    let r = exe_binop_int_f(&self.get_stack(a), i, |a, b| a.powf(b));
                     self.set_stack(dst, r);
                 }
                 ByteCode::BitAnd(dst, a, b) => {
+                    let r = exe_binop_i(&self.get_stack(a), &self.get_stack(b), |a, b| a & b);
+                    self.set_stack(dst, r);
+                }
+                ByteCode::BitAndConst(dst, a, b) => {
                     let r =
-                        exe_binop_i(&self.stack[a as usize], &self.stack[b as usize], |a, b| {
+                        exe_binop_i(&self.get_stack(a), &proto.constants[b as usize], |a, b| {
                             a & b
                         });
                     self.set_stack(dst, r);
                 }
-                ByteCode::BitAndConst(dst, a, b) => {
-                    let r = exe_binop_i(
-                        &self.stack[a as usize],
-                        &proto.constants[b as usize],
-                        |a, b| a & b,
-                    );
-                    self.set_stack(dst, r);
-                }
                 ByteCode::BitAndInt(dst, a, i) => {
-                    let r = exe_binop_int_i(&self.stack[a as usize], i, |a, b| a & b);
+                    let r = exe_binop_int_i(&self.get_stack(a), i, |a, b| a & b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::BitOr(dst, a, b) => {
+                    let r = exe_binop_i(&self.get_stack(a), &self.get_stack(b), |a, b| a | b);
+                    self.set_stack(dst, r);
+                }
+                ByteCode::BitOrConst(dst, a, b) => {
                     let r =
-                        exe_binop_i(&self.stack[a as usize], &self.stack[b as usize], |a, b| {
+                        exe_binop_i(&self.get_stack(a), &proto.constants[b as usize], |a, b| {
                             a | b
                         });
                     self.set_stack(dst, r);
                 }
-                ByteCode::BitOrConst(dst, a, b) => {
-                    let r = exe_binop_i(
-                        &self.stack[a as usize],
-                        &proto.constants[b as usize],
-                        |a, b| a | b,
-                    );
-                    self.set_stack(dst, r);
-                }
                 ByteCode::BitOrInt(dst, a, i) => {
-                    let r = exe_binop_int_i(&self.stack[a as usize], i, |a, b| a | b);
+                    let r = exe_binop_int_i(&self.get_stack(a), i, |a, b| a | b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::BitXor(dst, a, b) => {
+                    let r = exe_binop_i(&self.get_stack(a), &self.get_stack(b), |a, b| a ^ b);
+                    self.set_stack(dst, r);
+                }
+                ByteCode::BitXorConst(dst, a, b) => {
                     let r =
-                        exe_binop_i(&self.stack[a as usize], &self.stack[b as usize], |a, b| {
+                        exe_binop_i(&self.get_stack(a), &proto.constants[b as usize], |a, b| {
                             a ^ b
                         });
                     self.set_stack(dst, r);
                 }
-                ByteCode::BitXorConst(dst, a, b) => {
-                    let r = exe_binop_i(
-                        &self.stack[a as usize],
-                        &proto.constants[b as usize],
-                        |a, b| a ^ b,
-                    );
-                    self.set_stack(dst, r);
-                }
                 ByteCode::BitXorInt(dst, a, i) => {
-                    let r = exe_binop_int_i(&self.stack[a as usize], i, |a, b| a ^ b);
+                    let r = exe_binop_int_i(&self.get_stack(a), i, |a, b| a ^ b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::ShiftL(dst, a, b) => {
+                    let r = exe_binop_i(&self.get_stack(a), &self.get_stack(b), |a, b| a << b);
+                    self.set_stack(dst, r);
+                }
+                ByteCode::ShiftLConst(dst, a, b) => {
                     let r =
-                        exe_binop_i(&self.stack[a as usize], &self.stack[b as usize], |a, b| {
+                        exe_binop_i(&self.get_stack(a), &proto.constants[b as usize], |a, b| {
                             a << b
                         });
                     self.set_stack(dst, r);
                 }
-                ByteCode::ShiftLConst(dst, a, b) => {
-                    let r = exe_binop_i(
-                        &self.stack[a as usize],
-                        &proto.constants[b as usize],
-                        |a, b| a << b,
-                    );
-                    self.set_stack(dst, r);
-                }
                 ByteCode::ShiftLInt(dst, a, i) => {
-                    let r = exe_binop_int_i(&self.stack[a as usize], i, |a, b| a << b);
+                    let r = exe_binop_int_i(&self.get_stack(a), i, |a, b| a << b);
                     self.set_stack(dst, r);
                 }
                 ByteCode::ShiftR(dst, a, b) => {
+                    let r = exe_binop_i(&self.get_stack(a), &self.get_stack(b), |a, b| a >> b);
+                    self.set_stack(dst, r);
+                }
+                ByteCode::ShiftRConst(dst, a, b) => {
                     let r =
-                        exe_binop_i(&self.stack[a as usize], &self.stack[b as usize], |a, b| {
+                        exe_binop_i(&self.get_stack(a), &proto.constants[b as usize], |a, b| {
                             a >> b
                         });
                     self.set_stack(dst, r);
                 }
-                ByteCode::ShiftRConst(dst, a, b) => {
-                    let r = exe_binop_i(
-                        &self.stack[a as usize],
-                        &proto.constants[b as usize],
-                        |a, b| a >> b,
-                    );
-                    self.set_stack(dst, r);
-                }
                 ByteCode::ShiftRInt(dst, a, i) => {
-                    let r = exe_binop_int_i(&self.stack[a as usize], i, |a, b| a >> b);
+                    let r = exe_binop_int_i(&self.get_stack(a), i, |a, b| a >> b);
                     self.set_stack(dst, r);
                 }
 
                 ByteCode::Concat(dst, a, b) => {
-                    let r = exe_concat(&self.stack[a as usize], &self.stack[b as usize]);
+                    let r = exe_concat(&self.get_stack(a), &self.get_stack(b));
                     self.set_stack(dst, r);
                 }
                 ByteCode::ConcatConst(dst, a, b) => {
-                    let r = exe_concat(&self.stack[a as usize], &proto.constants[b as usize]);
+                    let r = exe_concat(&self.get_stack(a), &proto.constants[b as usize]);
                     self.set_stack(dst, r);
                 }
                 ByteCode::ConcatInt(dst, a, i) => {
-                    let r = exe_concat(&self.stack[a as usize], &Value::Integer(i as i64));
+                    let r = exe_concat(&self.get_stack(a), &Value::Integer(i as i64));
                     self.set_stack(dst, r);
                 }
                 ByteCode::Test(icond, jmp) => {
-                    let cond = &self.stack[icond as usize];
+                    let cond = &self.get_stack(icond);
                     if matches!(cond, Value::Nil | Value::Boolean(false)) {
                         pc = (pc as isize + jmp as isize) as usize
                     }
@@ -489,12 +476,12 @@ impl ExeState {
                 ByteCode::Jump(jmp) => pc = (pc as isize + jmp as isize) as usize,
                 ByteCode::ForPrepare(dst, jmp) => {
                     if let (&Value::Integer(mut i), &Value::Integer(step)) =
-                        (&self.stack[dst as usize], &self.stack[dst as usize + 2])
+                        (self.get_stack(dst), self.get_stack(dst + 2))
                     {
                         if step == 0 {
                             panic!("0 step in numerical for")
                         }
-                        let limit = match self.stack[dst as usize + 1] {
+                        let limit = match *self.get_stack(dst + 1) {
                             Value::Integer(limit) => limit,
                             Value::Float(limit) => {
                                 let limit = for_int_limit(limit, step > 0, &mut i);
@@ -518,7 +505,7 @@ impl ExeState {
                         }
                     }
                 }
-                ByteCode::ForLoop(dst, jmp) => match self.stack[dst as usize] {
+                ByteCode::ForLoop(dst, jmp) => match self.get_stack(dst) {
                     Value::Integer(i) => {
                         let limit = self.read_int(dst + 1);
                         let step = self.read_int(dst + 2);
@@ -578,7 +565,7 @@ impl ExeState {
     }
 
     fn make_float(&mut self, dst: u8) -> f64 {
-        match self.stack[dst as usize] {
+        match *self.get_stack(dst) {
             Value::Float(f) => f,
             Value::Integer(i) => {
                 let f = i as f64;
@@ -590,14 +577,14 @@ impl ExeState {
     }
 
     fn read_int(&self, dst: u8) -> i64 {
-        if let Value::Integer(i) = self.stack[dst as usize] {
+        if let Value::Integer(i) = *self.get_stack(dst) {
             i
         } else {
             panic!("invalid integer");
         }
     }
     fn read_float(&self, dst: u8) -> f64 {
-        if let Value::Float(f) = self.stack[dst as usize] {
+        if let Value::Float(f) = *self.get_stack(dst) {
             f
         } else {
             panic!("invalid integer");
@@ -632,7 +619,7 @@ impl ExeState {
     }
 
     fn set_table_int(&mut self, table: u8, key: i64, value: Value) {
-        if let Value::Table(table) = &self.stack[table as usize] {
+        if let Value::Table(table) = self.get_stack(table) {
             let mut table = table.borrow_mut();
             if key > 0 && (key < 4 || key < table.array.capacity() as i64 * 2) {
                 set_vec(&mut table.array, key as usize - 1, value);
@@ -645,7 +632,7 @@ impl ExeState {
     }
 
     fn do_set_table(&mut self, table: u8, key: Value, value: Value) {
-        if let Value::Table(table) = &self.stack[table as usize] {
+        if let Value::Table(table) = self.get_stack(table) {
             table.borrow_mut().map.insert(key, value);
         } else {
             panic!("invalid table: {table:?}");
@@ -660,7 +647,7 @@ impl ExeState {
     }
 
     fn get_table_int(&self, table: u8, key: i64) -> Value {
-        if let Value::Table(table) = &self.stack[table as usize] {
+        if let Value::Table(table) = self.get_stack(table) {
             let table = table.borrow();
             table
                 .array
@@ -673,11 +660,28 @@ impl ExeState {
     }
 
     fn do_get_table(&self, table: u8, key: &Value) -> Value {
-        if let Value::Table(table) = &self.stack[table as usize] {
+        if let Value::Table(table) = self.get_stack(table) {
             table.borrow().map.get(key).unwrap_or(&Value::Nil).clone()
         } else {
             panic!("invalid table: {table:?}");
         }
+    }
+}
+
+impl<'a> ExeState {
+    pub fn get_top(&self) -> usize {
+        self.stack.len() - self.base
+    }
+
+    pub fn get<T>(&'a self, i: usize) -> T
+    where
+        T: From<&'a Value>,
+    {
+        (&self.stack[self.base + i - 1]).into()
+    }
+
+    pub fn push(&mut self, v: impl Into<Value>) {
+        self.stack.push(v.into())
     }
 }
 
