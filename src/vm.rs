@@ -18,9 +18,8 @@ fn lib_print(state: &mut ExeState) -> i32 {
     for (i, v) in state.stack.iter().enumerate() {
         println!("({i})\t{v:?}")
     }
-    let narg = state.get_top();
-    for i in 0..narg {
-        if i != 0 {
+    for i in 1..=state.get_top() {
+        if i != 1 {
             print!("\t")
         }
         print!("{}", state.get::<&Value>(i).to_string());
@@ -673,6 +672,7 @@ impl ExeState {
 
 impl<'a> ExeState {
     pub fn get_top(&self) -> usize {
+        println!("{}, {}", self.stack.len(), self.base);
         self.stack.len() - self.base
     }
 
@@ -680,6 +680,7 @@ impl<'a> ExeState {
     where
         T: From<&'a Value>,
     {
+        println!("{}, {}", self.base, i);
         (&self.stack[self.base + i - 1]).into()
     }
 
