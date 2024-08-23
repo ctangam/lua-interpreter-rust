@@ -76,6 +76,11 @@ impl ExeState {
                     let new_value = proto.constants[src as usize].clone();
                     self.globals.insert(key.into(), new_value);
                 }
+
+                ByteCode::GetUpvalue(dst, idx) => {}
+                ByteCode::SetUpvalue(dst, src) => {}
+                ByteCode::SetUpvalueConst(dst, src) => {}
+                
                 ByteCode::LoadConst(dst, idx) => {
                     let value = proto.constants[idx as usize].clone();
                     self.set_stack(dst, value);

@@ -4,6 +4,10 @@ pub enum ByteCode {
     SetGlobal(u8, u8),
     SetGlobalConst(u8, u8),
 
+    GetUpvalue(u8, u8),
+    SetUpvalue(u8, u8),
+    SetUpvalueConst(u8, u8),
+
     LoadConst(u8, u16),
     LoadNil(u8, u8),
     LoadBool(u8, bool),
