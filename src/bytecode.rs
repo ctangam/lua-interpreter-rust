@@ -20,6 +20,7 @@ pub enum ByteCode {
     SetList(u8, u8),
     GetTable(u8, u8, u8),
     GetField(u8, u8, u8),
+    GetFieldSelf(u8, u8, u8),
     GetInt(u8, u8, u8),
     
     Test(u8, i16),

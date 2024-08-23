@@ -1,10 +1,5 @@
 use std::{
-    cell::RefCell,
-    cmp::Ordering,
-    collections::HashMap,
-    env::var,
-    io::{Read, Write},
-    rc::Rc,
+    cell::RefCell, cmp::Ordering, collections::HashMap, env::var, fmt::DebugStruct, io::{Read, Write}, rc::Rc
 };
 
 use crate::{
@@ -15,9 +10,9 @@ use crate::{
 };
 
 fn lib_print(state: &mut ExeState) -> i32 {
-    for (i, v) in state.stack.iter().enumerate() {
-        println!("({i})\t{v:?}")
-    }
+    // for (i, v) in state.stack.iter().enumerate() {
+    //     println!("({i})\t{v:?}")
+    // }
     for i in 1..=state.get_top() {
         if i != 1 {
             print!("\t")
@@ -148,6 +143,13 @@ impl ExeState {
                     let key = &proto.constants[key as usize];
                     let value = self.get_table(table, key);
                     self.set_stack(dst, value);
+                }
+                ByteCode::GetFieldSelf(dst, table, key) => {
+                    let key = &proto.constants[key as usize];
+                    let value = self.get_table(table, key);
+                    let table = self.get_stack(table).clone();
+                    self.set_stack(dst, value);
+                    self.set_stack(dst + 1, table);
                 }
                 ByteCode::GetTable(dst, table, key) => {
                     let key = &self.get_stack(key);
@@ -672,7 +674,6 @@ impl ExeState {
 
 impl<'a> ExeState {
     pub fn get_top(&self) -> usize {
-        println!("{}, {}", self.stack.len(), self.base);
         self.stack.len() - self.base
     }
 
@@ -680,7 +681,6 @@ impl<'a> ExeState {
     where
         T: From<&'a Value>,
     {
-        println!("{}, {}", self.base, i);
         (&self.stack[self.base + i - 1]).into()
     }
 

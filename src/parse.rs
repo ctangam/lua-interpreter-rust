@@ -792,7 +792,18 @@ impl<'a, R: Read> ParseProto<'a, R> {
                     let itable = self.discharge_if_need(sp0, desc);
                     desc = ExpDesc::IndexField(itable, self.add_const(name));
                 }
-                Token::Colon => todo!(": Name args"),
+                Token::Colon => { // :Name args
+                    self.lex.next();
+                    let name = self.read_name();
+                    let ikey = self.add_const(name);
+                    let itable = self.discharge_if_need(sp0, desc);
+
+                    self.fp.byte_codes.push(ByteCode::GetFieldSelf(sp0 as u8, itable as u8, ikey as u8));
+                    
+                    self.sp = sp0 + 2;
+
+                    desc = self.args(1);
+                }
                 Token::ParL | Token::CurlyL | Token::String(_) => {
                     // args
                     self.discharge(sp0, desc);
