@@ -19,6 +19,16 @@ impl Table {
     }
 }
 
+pub enum Upvalue {
+    Open(usize),
+    Closed(usize),
+}
+
+pub struct LuaClosure {
+    proto: Rc<FuncProto>,
+    upvalues: Vec<Rc<RefCell<Upvalue>>>,
+}
+
 #[derive(Clone)]
 pub enum Value{
     Nil,
@@ -29,6 +39,7 @@ pub enum Value{
     MidStr(Rc<(u8, [u8; MID_STR_MAX])>),
     LongStr(Rc<Vec<u8>>),
     LuaFunction(Rc<FuncProto>),
+    LuaClosure(Rc<LuaClosure>),
     RustFunction(fn (&mut ExeState) -> i32),
     Table(Rc<RefCell<Table>>),
 }
@@ -50,6 +61,7 @@ impl Value {
             &Value::Table(_) => "table",
             &Value::RustFunction(_) => "function",
             &Value::LuaFunction(_) => "function",
+            &Value::LuaClosure(_) => "closure",
         }
     }
 }
@@ -70,6 +82,7 @@ impl fmt::Debug for Value {
             }
             Value::RustFunction(_) => write!(f, "function"),
             Value::LuaFunction(_) => write!(f, "Lua function"),
+            Value::LuaClosure(_) => write!(f, "Lua closure"),
         }
     }
 }
@@ -206,6 +219,7 @@ impl Hash for Value {
             Value::Table(t) => Rc::as_ptr(t).hash(state),
             Value::LuaFunction(f) => Rc::as_ptr(f).hash(state),
             Value::RustFunction(f) => (*f as *const usize).hash(state),
+            Value::LuaClosure(c) => Rc::as_ptr(c).hash(state),
         }
     }
 }

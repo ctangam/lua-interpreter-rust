@@ -535,6 +535,7 @@ impl ExeState {
                     }
                     _ => panic!("xx"),
                 },
+                ByteCode::Closure(_, _) => todo!(),
             }
             pc += 1;
         }

@@ -39,6 +39,8 @@ pub enum ByteCode {
     Return0,
     Return(u8, u8),
     TailCall(u8, u8),
+    Closure(u8, u16),
+
 
     Neg(u8, u8),
     Not(u8, u8),

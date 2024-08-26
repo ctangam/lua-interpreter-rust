@@ -54,7 +54,14 @@ pub struct FuncProto {
 #[derive(Debug)]
 struct ParseContext<R: Read> {
     all_locals: Vec<Vec<String>>,
+    all_upvalues: Vec<Vec<(String, UpIndex)>>,
     lex: Lex<R>,
+}
+
+#[derive(Debug)]
+pub enum UpIndex {
+    Local(usize),
+    Upvalue(usize),
 }
 
 #[derive(Debug)]
@@ -67,6 +74,9 @@ pub struct ParseProto<'a, R: Read> {
     pub continue_blocks: Vec<Vec<(usize, usize)>>,
     pub gotos: Vec<GotoLabel>,
     pub labels: Vec<GotoLabel>,
+
+    pub upindexes: Vec<UpIndex>,
+    pub inner_funcs: Vec<Rc<FuncProto>>,
 }
 
 impl<'a, R: Read> ParseProto<'a, R> {
@@ -87,6 +97,8 @@ impl<'a, R: Read> ParseProto<'a, R> {
             continue_blocks: Vec::new(),
             gotos: Vec::new(),
             labels: Vec::new(),
+            upindexes: todo!(),
+            inner_funcs: todo!(),
         }
     }
 
@@ -1320,6 +1332,7 @@ pub fn load(input: impl Read) -> FuncProto {
     let mut ctx = ParseContext{
         lex: Lex::new(input),
         all_locals: Default::default(),
+        all_upvalues: todo!(),
     };
     chunk(&mut ctx, false, Vec::new(), Token::Eos)
 }
