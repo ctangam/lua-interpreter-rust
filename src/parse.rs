@@ -23,7 +23,8 @@ enum ExpDesc {
     IndexInt(usize, u8),
     Index(usize, usize),
     // IndexUpField(usize, usize),
-    Function(Value),
+    Function(usize),
+    Closure(usize),
     Call(usize, usize),
     Vargs,
 
@@ -265,7 +266,14 @@ impl<'a, R: Read> ParseProto<'a, R> {
         }
 
         let proto = chunk(self.ctx, has_vargs, params, Token::End);
-        ExpDesc::Function(Value::LuaFunction(Rc::new(proto)))
+        
+        let no_upvalue = proto.upindexes.is_empty();
+        let iconst = self.add_const(Value::LuaFunction(Rc::new(proto)));
+        if no_upvalue {
+            ExpDesc::Function(iconst)
+        } else {
+            ExpDesc::Closure(iconst)
+        }
     }
 
     // BNF:
@@ -1142,7 +1150,8 @@ impl<'a, R: Read> ParseProto<'a, R> {
             ExpDesc::Index(itable, ikey) => ByteCode::GetTable(dst as u8, itable as u8, ikey as u8),
 
             ExpDesc::Vargs => ByteCode::Vargs(dst as u8, 1),
-            ExpDesc::Function(f) => ByteCode::LoadConst(dst as u8, self.add_const(f) as u16),
+            ExpDesc::Function(f) => ByteCode::LoadConst(dst as u8, f as u16),
+            ExpDesc::Closure(f) => ByteCode::Closure(dst as u8, f as u16),
             ExpDesc::Call(ifunc, narg_plus) => {
                 ByteCode::CallSet(dst as u8, ifunc as u8, narg_plus as u8)
             }
