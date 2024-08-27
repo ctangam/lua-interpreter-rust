@@ -7,6 +7,7 @@ pub enum ByteCode {
     GetUpvalue(u8, u8),
     SetUpvalue(u8, u8),
     SetUpvalueConst(u8, u8),
+    Close(u8),
 
     LoadConst(u8, u16),
     LoadNil(u8, u8),

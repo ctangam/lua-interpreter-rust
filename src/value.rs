@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, fmt, hash::{Hash, Hasher}, mem, rc::Rc};
 
-use crate::{parse::FuncProto, vm::ExeState};
+use crate::{parse::FuncProto, vm::{ExeState, LuaClosure}};
 
 const SHORT_STR_MAX: usize = 16 - 1 - 1;
 const MID_STR_MAX: usize = 48 - 1;
@@ -17,16 +17,6 @@ impl Table {
             map: HashMap::with_capacity(nmap),
         }
     }
-}
-
-pub enum Upvalue {
-    Open(usize),
-    Closed(usize),
-}
-
-pub struct LuaClosure {
-    proto: Rc<FuncProto>,
-    upvalues: Vec<Rc<RefCell<Upvalue>>>,
 }
 
 #[derive(Clone)]

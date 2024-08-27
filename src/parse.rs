@@ -15,14 +15,14 @@ enum ExpDesc {
     Float(f64),
     String(Vec<u8>),
 
-    Local(usize),  // on stack, including local and temprary variables
+    Local(usize), // on stack, including local and temprary variables
     Upvalue(usize),
     Global(usize), // global variable
 
     IndexField(usize, usize),
     IndexInt(usize, u8),
     Index(usize, usize),
-
+    // IndexUpField(usize, usize),
     Function(Value),
     Call(usize, usize),
     Vargs,
@@ -43,18 +43,24 @@ struct GotoLabel {
     nvar: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FuncProto {
     pub has_vargs: bool,
     pub nparam: usize,
     pub constants: Vec<Value>,
     pub byte_codes: Vec<ByteCode>,
+    pub upindexes: Vec<UpIndex>,
+}
+
+#[derive(Debug, Default)]
+struct Level {
+    locals: Vec<(String, bool)>,
+    upvalues: Vec<(String, UpIndex)>,
 }
 
 #[derive(Debug)]
 struct ParseContext<R: Read> {
-    all_locals: Vec<Vec<String>>,
-    all_upvalues: Vec<Vec<(String, UpIndex)>>,
+    levels: Vec<Level>,
     lex: Lex<R>,
 }
 
@@ -74,34 +80,9 @@ pub struct ParseProto<'a, R: Read> {
     pub continue_blocks: Vec<Vec<(usize, usize)>>,
     pub gotos: Vec<GotoLabel>,
     pub labels: Vec<GotoLabel>,
-
-    pub upindexes: Vec<UpIndex>,
-    pub inner_funcs: Vec<Rc<FuncProto>>,
 }
 
 impl<'a, R: Read> ParseProto<'a, R> {
-    pub fn new(ctx: &'a mut ParseContext<R>, has_varargs: bool, params: Vec<String>) -> Self {
-        let nparam = params.len();
-        ctx.all_locals.push(params);
-
-        ParseProto {
-            fp: FuncProto {
-                has_vargs: has_varargs,
-                nparam,
-                constants: Vec::new(),
-                byte_codes: Vec::new(),
-            },
-            sp: 0,
-            ctx,
-            break_blocks: Vec::new(),
-            continue_blocks: Vec::new(),
-            gotos: Vec::new(),
-            labels: Vec::new(),
-            upindexes: todo!(),
-            inner_funcs: todo!(),
-        }
-    }
-
     // BNF:
     //   block ::= {stat} [retstat]
     //   stat ::= `;` |
@@ -120,9 +101,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
     //     local function Name funcbody |
     //     local attnamelist [`=` explist]
     fn block(&mut self) -> Token {
-        let nvar = self.ctx.all_locals.last().unwrap().len();
+        let nvar = self.local_num();
         let end_token = self.block_scope();
-        self.ctx.all_locals.last_mut().unwrap().truncate(nvar);
+        self.local_expire(nvar);
         end_token
     }
 
@@ -130,7 +111,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let igoto = self.gotos.len();
         let ilabel = self.labels.len();
         loop {
-            self.sp = self.ctx.all_locals.last().unwrap().len();
+            self.sp = self.local_num();
 
             match self.ctx.lex.next() {
                 Token::SemiColon => (),
@@ -201,7 +182,10 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 .push(ByteCode::LoadNil(self.sp as u8, vars.len() as u8))
         }
 
-        self.ctx.all_locals.last_mut().unwrap().append(&mut vars)
+        // append vars into self.locals after evaluating explist
+        for var in vars.into_iter() {
+            self.local_new(var);
+        }
     }
 
     // BNF:
@@ -212,10 +196,10 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let name = self.read_name();
         println!("== function: {name}");
 
+        self.local_new(name);
+
         let f = self.funcbody(false);
         self.discharge(self.sp, f);
-
-        self.ctx.all_locals.last_mut().unwrap().push(name);
     }
 
     // BNF:
@@ -377,6 +361,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
     fn assign_from_stack(&mut self, var: ExpDesc, value: usize) {
         let code = match var {
             ExpDesc::Local(i) => ByteCode::Move(i as u8, value as u8),
+            ExpDesc::Upvalue(i) => ByteCode::SetUpvalue(i as u8, value as u8),
             ExpDesc::Global(name) => ByteCode::SetGlobal(name as u8, value as u8),
             ExpDesc::Index(t, key) => ByteCode::SetTable(t as u8, key as u8, value as u8),
             ExpDesc::IndexField(t, key) => ByteCode::SetField(t as u8, key as u8, value as u8),
@@ -389,6 +374,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
     fn assign_from_const(&mut self, var: ExpDesc, value: usize) {
         let code = match var {
+            ExpDesc::Upvalue(i) => ByteCode::SetUpvalueConst(i as u8, value as u8),
             ExpDesc::Global(name) => ByteCode::SetGlobalConst(name as u8, value as u8),
             ExpDesc::Index(t, key) => ByteCode::SetTableConst(t as u8, key as u8, value as u8),
             ExpDesc::IndexField(t, key) => ByteCode::SetFieldConst(t as u8, key as u8, value as u8),
@@ -492,9 +478,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
             _ => panic!("invalid numerical for exp"),
         }
 
-        self.ctx.all_locals.last_mut().unwrap().push(name);
-        self.ctx.all_locals.last_mut().unwrap().push(String::from(""));
-        self.ctx.all_locals.last_mut().unwrap().push(String::from(""));
+        self.local_new(name);
+        self.local_new(String::from(""));
+        self.local_new(String::from(""));
 
         self.ctx.lex.expect(Token::Do);
 
@@ -506,9 +492,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
         assert_eq!(self.block(), Token::End);
 
-        self.ctx.all_locals.last_mut().unwrap().pop();
-        self.ctx.all_locals.last_mut().unwrap().pop();
-        self.ctx.all_locals.last_mut().unwrap().pop();
+        self.local_expire(self.local_num() - 3);
 
         let d = self.fp.byte_codes.len() - iprepare;
         self.fp
@@ -532,7 +516,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
         self.push_loop_block();
 
-        let nvar = self.ctx.all_locals.last().unwrap().len();
+        let nvar = self.local_num();
 
         assert_eq!(self.block_scope(), Token::Until);
         let iend1 = self.fp.byte_codes.len();
@@ -545,7 +529,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
             .push(ByteCode::Test(icond as u8, -((iend2 - istart + 1) as i16)));
 
         self.pop_loop_block(iend1);
-        self.ctx.all_locals.last_mut().unwrap().truncate(nvar);
+        self.local_expire(nvar);
     }
 
     fn break_stat(&mut self) {
@@ -567,7 +551,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
         self.gotos.push(GotoLabel {
             name,
             icode: self.fp.byte_codes.len() - 1,
-            nvar: self.ctx.all_locals.last().unwrap().len(),
+            nvar: self.local_num(),
         })
     }
 
@@ -584,7 +568,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
         self.labels.push(GotoLabel {
             name,
             icode: self.fp.byte_codes.len(),
-            nvar: self.ctx.all_locals.last().unwrap().len(),
+            nvar: self.local_num(),
         })
     }
 
@@ -616,13 +600,17 @@ impl<'a, R: Read> ParseProto<'a, R> {
             if name.as_str() != "continue" {
                 return false;
             }
-            if !matches!(self.ctx.lex.peek(), Token::End | Token::Elseif | Token::Else) {
+            if !matches!(
+                self.ctx.lex.peek(),
+                Token::End | Token::Elseif | Token::Else
+            ) {
                 return false;
             }
 
+            let nvar = self.local_num();
             if let Some(continues) = self.continue_blocks.last_mut() {
                 self.fp.byte_codes.push(ByteCode::Jump(0));
-                continues.push((self.fp.byte_codes.len() - 1, self.ctx.all_locals.last().unwrap().len()))
+                continues.push((self.fp.byte_codes.len() - 1, nvar))
             } else {
                 panic!("continue outside loop")
             }
@@ -644,7 +632,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
             self.fp.byte_codes[i] = ByteCode::Jump((iend - i) as i16);
         }
 
-        let end_nvar = self.ctx.all_locals.last().unwrap().len();
+        let end_nvar = self.local_num();
         for (i, i_nvar) in self.continue_blocks.pop().unwrap().into_iter() {
             if i_nvar < end_nvar {
                 panic!("continue jump into local scope")
@@ -795,15 +783,25 @@ impl<'a, R: Read> ParseProto<'a, R> {
             match self.ctx.lex.peek() {
                 Token::SqurL => {
                     self.ctx.lex.next();
-                    let itable = self.discharge_if_need(sp0, desc);
-                    desc = match self.exp() {
-                        ExpDesc::String(s) => ExpDesc::IndexField(itable, self.add_const(s)),
-                        ExpDesc::Integer(i) if u8::try_from(i).is_ok() => {
-                            ExpDesc::IndexInt(itable, u8::try_from(i).unwrap())
-                        }
-                        key => ExpDesc::Index(itable, self.discharge_top(key)),
-                    };
+                    let key = self.exp();
                     self.ctx.lex.expect(Token::SqurR);
+                    desc = match (desc, key) {
+                        // (ExpDesc::Upvalue(itable), ExpDesc::String(key)) => {
+                        //     ExpDesc::IndexUpField(itable, self.add_const(key))
+                        // }
+                        (table, key) => {
+                            let itable = self.discharge_if_need(sp0, table);
+                            match key {
+                                ExpDesc::String(s) => {
+                                    ExpDesc::IndexField(itable, self.add_const(s))
+                                }
+                                ExpDesc::Integer(i) if u8::try_from(i).is_ok() => {
+                                    ExpDesc::IndexInt(itable, u8::try_from(i).unwrap())
+                                }
+                                _ => ExpDesc::Index(itable, self.discharge_top(key)),
+                            }
+                        }
+                    };
                 }
                 Token::Dot => {
                     self.ctx.lex.next();
@@ -811,14 +809,19 @@ impl<'a, R: Read> ParseProto<'a, R> {
                     let itable = self.discharge_if_need(sp0, desc);
                     desc = ExpDesc::IndexField(itable, self.add_const(name));
                 }
-                Token::Colon => { // :Name args
+                Token::Colon => {
+                    // :Name args
                     self.ctx.lex.next();
                     let name = self.read_name();
                     let ikey = self.add_const(name);
                     let itable = self.discharge_if_need(sp0, desc);
 
-                    self.fp.byte_codes.push(ByteCode::GetFieldSelf(sp0 as u8, itable as u8, ikey as u8));
-                    
+                    self.fp.byte_codes.push(ByteCode::GetFieldSelf(
+                        sp0 as u8,
+                        itable as u8,
+                        ikey as u8,
+                    ));
+
                     self.sp = sp0 + 2;
 
                     desc = self.args(1);
@@ -833,6 +836,27 @@ impl<'a, R: Read> ParseProto<'a, R> {
                     return desc;
                 }
             }
+        }
+    }
+
+    fn local_num(&self) -> usize {
+        self.ctx.levels.last().unwrap().locals.len()
+    }
+
+    fn local_new(&mut self, name: String) {
+        self.ctx
+            .levels
+            .last_mut()
+            .unwrap()
+            .locals
+            .push((name, false))
+    }
+
+    fn local_expire(&mut self, from: usize) {
+        let mut vars = self.ctx.levels.last_mut().unwrap().locals.drain(from..);
+
+        if vars.any(|v| v.1) {
+            self.fp.byte_codes.push(ByteCode::Close(from as u8))
         }
     }
 
@@ -875,12 +899,47 @@ impl<'a, R: Read> ParseProto<'a, R> {
     }
 
     fn simple_name(&mut self, name: &str) -> ExpDesc {
+        let mut level_iter = self.ctx.levels.iter_mut().rev();
+
+        // 在当前函数的局部变量中匹配，如果找到则是局部变量；
+        // 在当前函数的Upvalue列表中匹配，如果找到则是已有Upvalue；（复用Upvalue）
+        let level = level_iter.next().unwrap();
         // search reversely, so new variable covers old one with same name
-        if let Some(ilocal) = self.ctx.all_locals.last().unwrap().iter().rposition(|v| v == name) {
-            ExpDesc::Local(ilocal)
-        } else {
-            ExpDesc::Global(self.add_const(name))
+        if let Some(i) = level.locals.iter().rposition(|v| v.0 == name) {
+            return ExpDesc::Local(i);
         }
+        if let Some(i) = level.upvalues.iter().position(|v| v.0 == name) {
+            return ExpDesc::Upvalue(i);
+        }
+
+        // 在更外层函数的局部变量中匹配，如果找到则在所有中间层函数中创建Upvalue，并新增Upvalue；（跨多层函数的引用）
+        // 在更外层函数的Upvalue中匹配，如果找到则在所有中间层函数中创建Upvalue，并新增Upvalue；（跨多层函数的Upvalue的引用）
+        for (depth, level) in level_iter.enumerate() {
+            if let Some(i) = level.locals.iter().rposition(|v| v.0 == name) {
+                level.locals[i].1 = true;
+                return self.create_upvalue(name, UpIndex::Local(i), depth);
+            }
+
+            if let Some(i) = level.upvalues.iter().position(|v| v.0 == name) {
+                return self.create_upvalue(name, UpIndex::Upvalue(i), depth);
+            }
+        }
+
+        ExpDesc::Global(self.add_const(name))
+    }
+
+    fn create_upvalue(&mut self, name: &str, mut upidx: UpIndex, depth: usize) -> ExpDesc {
+        let levels = &mut self.ctx.levels;
+        let last = levels.len() - 1;
+
+        for Level { upvalues, .. } in levels[last - depth..last].iter_mut() {
+            upvalues.push((name.into(), upidx));
+            upidx = UpIndex::Upvalue(upvalues.len() - 1);
+        }
+
+        let upvalues = &mut levels[last].upvalues;
+        upvalues.push((name.into(), upidx));
+        ExpDesc::Upvalue(upvalues.len() - 1)
     }
 
     fn unop_neg(&mut self) -> ExpDesc {
@@ -1073,7 +1132,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
                     return;
                 }
             }
-            ExpDesc::Upvalue(i) => todo!("upvalue"),
+            ExpDesc::Upvalue(src) => ByteCode::GetUpvalue(dst as u8, src as u8),
             ExpDesc::Global(i) => ByteCode::GetGlobal(dst as u8, i as u8),
 
             ExpDesc::IndexField(itable, ikey) => {
@@ -1329,10 +1388,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
 }
 
 pub fn load(input: impl Read) -> FuncProto {
-    let mut ctx = ParseContext{
+    let mut ctx = ParseContext {
         lex: Lex::new(input),
-        all_locals: Default::default(),
-        all_upvalues: todo!(),
+        levels: Default::default(),
     };
     chunk(&mut ctx, false, Vec::new(), Token::Eos)
 }
@@ -1343,16 +1401,49 @@ fn chunk(
     params: Vec<String>,
     end_token: Token,
 ) -> FuncProto {
-    let mut proto = ParseProto::new(ctx, has_vargs, params);
+    let fp = FuncProto {
+        has_vargs,
+        nparam: params.len(),
+        ..Default::default()
+    };
+
+    ctx.levels.push(Level {
+        locals: params.into_iter().map(|p| (p, false)).collect(),
+        upvalues: Vec::new(),
+    });
+
+    let mut proto = ParseProto {
+        sp: 0,
+        break_blocks: Vec::new(),
+        continue_blocks: Vec::new(),
+        gotos: Vec::new(),
+        labels: Vec::new(),
+
+        fp,
+        ctx,
+    };
 
     assert_eq!(proto.block(), end_token);
     if let Some(goto) = proto.gotos.first() {
         panic!("goto {} no destination", &goto.name);
     }
 
-    proto.fp.byte_codes.push(ByteCode::Return0);
+    // clear
+    let ParseProto { mut fp, ctx, .. } = proto;
 
-    proto.fp
+    let level = ctx.levels.pop().unwrap();
+    fp.upindexes = level.upvalues.into_iter().map(|u| u.1).collect();
+
+    fp.byte_codes.push(ByteCode::Return0);
+
+    println!("constants: {:?}", &fp.constants);
+    println!("upindexes: {:?}", &fp.upindexes);
+    println!("byte_codes:");
+    for (i, c) in fp.byte_codes.iter().enumerate() {
+        println!("  {i}\t{c:?}");
+    }
+
+    fp
 }
 
 impl Token {

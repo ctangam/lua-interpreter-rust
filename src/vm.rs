@@ -29,6 +29,17 @@ fn lib_type(state: &mut ExeState) -> i32 {
     1
 }
 
+#[derive(Debug, PartialEq)]
+pub enum Upvalue {
+    Open(usize),
+    Closed(usize),
+}
+
+pub struct LuaClosure {
+    proto: Rc<FuncProto>,
+    upvalues: Vec<Rc<RefCell<Upvalue>>>,
+}
+
 #[derive(Debug)]
 pub struct ExeState {
     pub globals: HashMap<String, Value>,
@@ -80,6 +91,7 @@ impl ExeState {
                 ByteCode::GetUpvalue(dst, idx) => {}
                 ByteCode::SetUpvalue(dst, src) => {}
                 ByteCode::SetUpvalueConst(dst, src) => {}
+                ByteCode::Close(dst) => {}
                 
                 ByteCode::LoadConst(dst, idx) => {
                     let value = proto.constants[idx as usize].clone();
