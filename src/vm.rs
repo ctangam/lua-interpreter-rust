@@ -1,10 +1,16 @@
 use std::{
-    cell::RefCell, cmp::Ordering, collections::HashMap, env::var, fmt::DebugStruct, io::{Read, Write}, rc::Rc
+    cell::RefCell,
+    cmp::Ordering,
+    collections::HashMap,
+    env::var,
+    fmt::DebugStruct,
+    io::{Read, Write},
+    rc::Rc,
 };
 
 use crate::{
     bytecode::ByteCode,
-    parse::FuncProto,
+    parse::{FuncProto, UpIndex},
     utils::ftoi,
     value::{Table, Value},
 };
@@ -32,7 +38,37 @@ fn lib_type(state: &mut ExeState) -> i32 {
 #[derive(Debug, PartialEq)]
 pub enum Upvalue {
     Open(usize),
-    Closed(usize),
+    Closed(Value),
+}
+
+impl Upvalue {
+    fn get<'a>(&'a self, stack: &'a Vec<Value>) -> &'a Value {
+        match self {
+            Upvalue::Open(idx) => &stack[*idx],
+            Upvalue::Closed(idx) => &idx,
+        }
+    }
+
+    fn set(&mut self, stack: &mut Vec<Value>, value: Value) {
+        match self {
+            Upvalue::Open(idx) => stack[*idx] = value,
+            Upvalue::Closed(idx) => *idx = value,
+        }
+    }
+}
+
+struct OpenBroker {
+    ilocal: usize,
+    broker: Rc<RefCell<Upvalue>>,
+}
+
+impl From<usize> for OpenBroker {
+    fn from(ilocal: usize) -> Self {
+        OpenBroker {
+            ilocal,
+            broker: Rc::new(RefCell::new(Upvalue::Open(ilocal))),
+        }
+    }
 }
 
 pub struct LuaClosure {
@@ -60,7 +96,14 @@ impl ExeState {
         }
     }
 
-    pub fn execute(&mut self, proto: &FuncProto) -> usize {
+    pub fn execute(&mut self, proto: &FuncProto, upvalues: &Vec<Rc<RefCell<Upvalue>>>) -> usize {
+        let mut open_brokers: Vec<OpenBroker> = Vec::new();
+
+        // fill nil if #argument < #parameter
+        if self.stack.len() - self.base < proto.nparam {
+            self.fill_stack_nil(0, proto.nparam);
+        }
+
         let vargs = if proto.has_vargs {
             self.stack.drain(self.base + proto.nparam..).collect()
         } else {
@@ -71,6 +114,26 @@ impl ExeState {
         loop {
             println!("  [{pc}]\t{:?}", proto.byte_codes[pc]);
             match proto.byte_codes[pc] {
+                ByteCode::GetUpvalue(dst, src) => {
+                    let v = upvalues[src as usize].borrow().get(&self.stack).clone();
+                    self.set_stack(dst, v);
+                }
+                ByteCode::SetUpvalue(dst, src) => {
+                    let v = self.get_stack(src).clone();
+                    upvalues[dst as usize].borrow_mut().set(&mut self.stack, v);
+                }
+                ByteCode::SetUpvalueConst(dst, src) => {
+                    let v = proto.constants[src as usize].clone();
+                    upvalues[dst as usize].borrow_mut().set(&mut self.stack, v);
+                }
+                ByteCode::Close(ilocal) => {
+                    let ilocal = self.base + ilocal as usize;
+                    let from = open_brokers
+                        .binary_search_by_key(&ilocal, |b| b.ilocal)
+                        .unwrap_or_else(|i| i);
+                    self.close_brokers(open_brokers.drain(from..));
+                }
+
                 ByteCode::GetGlobal(dst, idx) => {
                     let key: &str = (&proto.constants[idx as usize]).into();
                     let v = self.globals.get(key).unwrap_or(&Value::Nil).clone();
@@ -88,11 +151,6 @@ impl ExeState {
                     self.globals.insert(key.into(), new_value);
                 }
 
-                ByteCode::GetUpvalue(dst, idx) => {}
-                ByteCode::SetUpvalue(dst, src) => {}
-                ByteCode::SetUpvalueConst(dst, src) => {}
-                ByteCode::Close(dst) => {}
-                
                 ByteCode::LoadConst(dst, idx) => {
                     let value = proto.constants[idx as usize].clone();
                     self.set_stack(dst, value);
@@ -188,6 +246,36 @@ impl ExeState {
                         self.stack.extend_from_slice(&vargs[..want]);
                     }
                 }
+                ByteCode::Closure(dst, inner) => {
+                    let Value::LuaFunction(inner_proto) = proto.constants[inner as usize].clone()
+                    else {
+                        panic!("must be funcproto");
+                    };
+
+                    let inner_upvalues = inner_proto
+                        .upindexes
+                        .iter()
+                        .map(|up| match up {
+                            &UpIndex::Upvalue(iup) => upvalues[iup].clone(),
+                            &UpIndex::Local(ilocal) => {
+                                let ilocal = self.base + ilocal;
+                                let iob = open_brokers
+                                    .binary_search_by_key(&ilocal, |b: &OpenBroker| b.ilocal)
+                                    .unwrap_or_else(|i| {
+                                        open_brokers.insert(i, OpenBroker::from(ilocal));
+                                        i
+                                    });
+                                open_brokers[iob].broker.clone()
+                            }
+                        })
+                        .collect();
+
+                    let c = LuaClosure {
+                        upvalues: inner_upvalues,
+                        proto: inner_proto,
+                    };
+                    self.set_stack(dst, Value::LuaClosure(Rc::new(c)))
+                }
                 ByteCode::Call(func, narg_plus, want_nret) => {
                     let nret = self.call_function(func, narg_plus);
 
@@ -212,10 +300,14 @@ impl ExeState {
                     self.stack.truncate(self.base + func as usize + 1)
                 }
                 ByteCode::TailCall(func, narg_plus) => {
+                    self.close_brokers(open_brokers);
+
                     self.stack.drain(self.base - 1..self.base + func as usize);
                     return self.do_call_function(narg_plus);
                 }
                 ByteCode::Return(iret, nret) => {
+                    self.close_brokers(open_brokers);
+
                     let iret = self.base + iret as usize;
                     if nret == 0 {
                         return self.stack.len() - iret;
@@ -224,7 +316,10 @@ impl ExeState {
                         return nret as usize;
                     }
                 }
-                ByteCode::Return0 => return 0,
+                ByteCode::Return0 => {
+                    self.close_brokers(open_brokers);
+                    return 0;
+                }
 
                 ByteCode::Neg(dst, src) => {
                     let value = match &self.get_stack(src) {
@@ -547,7 +642,6 @@ impl ExeState {
                     }
                     _ => panic!("xx"),
                 },
-                ByteCode::Closure(_, _) => todo!(),
             }
             pc += 1;
         }
@@ -561,28 +655,21 @@ impl ExeState {
     }
 
     fn do_call_function(&mut self, narg_plus: u8) -> usize {
+        if narg_plus != 0 {
+            self.stack.truncate(self.base + narg_plus as usize - 1);
+        }
         match self.stack[self.base - 1].clone() {
-            Value::RustFunction(f) => {
-                if narg_plus != 0 {
-                    self.stack.truncate(self.base + narg_plus as usize - 1);
-                }
-                f(self) as usize
-            }
-            Value::LuaFunction(f) => {
-                let narg = if narg_plus == 0 {
-                    self.stack.len() - self.base
-                } else {
-                    narg_plus as usize - 1
-                };
-
-                if narg < f.nparam {
-                    self.fill_stack(narg, f.nparam - narg);
-                } else if f.has_vargs && narg_plus != 0 {
-                    self.stack.truncate(self.base + narg);
-                }
-                self.execute(&f)
-            }
+            Value::RustFunction(f) => f(self) as usize,
+            Value::LuaFunction(f) => self.execute(&f, &Vec::new()),
+            Value::LuaClosure(c) => self.execute(&c.proto, &c.upvalues),
             f => panic!("invalid function: {f:?}"),
+        }
+    }
+
+    fn close_brokers(&self, open_brokers: impl IntoIterator<Item = OpenBroker>) {
+        for OpenBroker { ilocal, broker } in open_brokers {
+            let openi = broker.replace(Upvalue::Closed(self.stack[ilocal].clone()));
+            debug_assert_eq!(openi, Upvalue::Open(ilocal));
         }
     }
 
@@ -619,6 +706,11 @@ impl ExeState {
 
     fn set_stack(&mut self, dst: u8, value: Value) {
         set_vec(&mut self.stack, self.base + dst as usize, value)
+    }
+
+    fn fill_stack_nil(&mut self, base: u8, to: usize) {
+        self.stack
+            .resize(self.base + base as usize + to, Value::Nil);
     }
 
     fn fill_stack(&mut self, begin: usize, num: usize) {
