@@ -91,7 +91,7 @@ impl ExeState {
 
         ExeState {
             globals,
-            stack: Vec::new(),
+            stack: vec![Value::Nil],
             base: 1,
         }
     }

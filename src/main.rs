@@ -28,5 +28,5 @@ fn main() {
     let input = BufReader::new(file);
     let proto = parse::load(input);
 
-    vm::ExeState::new().execute(&proto);
+    vm::ExeState::new().execute(&proto, &Vec::new());
 }
