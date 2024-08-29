@@ -33,6 +33,7 @@ pub enum ByteCode {
 
     ForPrepare(u8, u16),
     ForLoop(u8, u16),
+    ForCallLoop(u8, u8, u8),
 
     Vargs(u8, u8),
     Call(u8, u8, u8),

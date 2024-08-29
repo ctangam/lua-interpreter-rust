@@ -31,6 +31,7 @@ pub enum Value{
     LuaFunction(Rc<FuncProto>),
     LuaClosure(Rc<LuaClosure>),
     RustFunction(fn (&mut ExeState) -> i32),
+    RustClosure(Rc<RefCell<Box<dyn FnMut (&mut ExeState) -> i32>>>),
     Table(Rc<RefCell<Table>>),
 }
 
@@ -52,6 +53,7 @@ impl Value {
             &Value::RustFunction(_) => "function",
             &Value::LuaFunction(_) => "function",
             &Value::LuaClosure(_) => "closure",
+            &Value::RustClosure(_) => "closure",
         }
     }
 }
@@ -73,6 +75,7 @@ impl fmt::Debug for Value {
             Value::RustFunction(_) => write!(f, "function"),
             Value::LuaFunction(_) => write!(f, "Lua function"),
             Value::LuaClosure(_) => write!(f, "Lua closure"),
+            Value::RustClosure(_) => write!(f, "Rust closure"),
         }
     }
 }
@@ -191,6 +194,15 @@ impl From<&Value> for String {
     }
 }
 
+impl From<&Value> for i64 {
+    fn from(value: &Value) -> Self {
+        match value {
+            Value::Integer(i) => *i,
+            _ => panic!("invalid integer value: {value:?}"),
+        }
+    }
+}
+
 impl Eq for Value {}
 
 impl Hash for Value {
@@ -210,6 +222,7 @@ impl Hash for Value {
             Value::LuaFunction(f) => Rc::as_ptr(f).hash(state),
             Value::RustFunction(f) => (*f as *const usize).hash(state),
             Value::LuaClosure(c) => Rc::as_ptr(c).hash(state),
+            Value::RustClosure(c) => Rc::as_ptr(c).hash(state),
         }
     }
 }

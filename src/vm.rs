@@ -1,11 +1,5 @@
 use std::{
-    cell::RefCell,
-    cmp::Ordering,
-    collections::HashMap,
-    env::var,
-    fmt::DebugStruct,
-    io::{Read, Write},
-    rc::Rc,
+    arch::x86_64::_SIDD_NEGATIVE_POLARITY, cell::RefCell, cmp::Ordering, collections::HashMap, env::var, fmt::DebugStruct, io::{Read, Write}, iter, rc::Rc
 };
 
 use crate::{
@@ -33,6 +27,43 @@ fn lib_type(state: &mut ExeState) -> i32 {
     let ty = state.get::<&Value>(1).ty();
     state.push(ty);
     1
+}
+
+fn test_new_counter(state: &mut ExeState) -> i32 {
+    let mut i = 0_i32;
+    let c = move |_: &mut ExeState| {
+        i += 1;
+        println!("counter: {i}");
+        0
+    };
+    state.push(Value::RustClosure(Rc::new(RefCell::new(Box::new(c)))));
+    1
+}
+
+fn ipairs_aux(state: &mut ExeState) -> i32 {
+    let table = match state.get::<&Value>(1) {
+        Value::Table(t) => t.borrow(),
+        _ => panic!("ipairs non-table"),
+    };
+
+    let i: i64 = state.get(2);
+    if i < 0 || i as usize >= table.array.len() {
+        return 0;
+    }
+
+    let v = table.array[i as usize].clone();
+    drop(table);
+
+    state.push(i + 1);
+    state.push(v);
+    2
+}
+
+fn ipairs(state: &mut ExeState) -> i32 {
+    state.push(Value::RustFunction(ipairs_aux));
+    state.push(state.get::<&Value>(1).clone());
+    state.push(0);
+    3
 }
 
 #[derive(Debug, PartialEq)]
@@ -88,6 +119,8 @@ impl ExeState {
         let mut globals = HashMap::new();
         globals.insert("print".into(), Value::RustFunction(lib_print));
         globals.insert("type".into(), Value::RustFunction(lib_type));
+        globals.insert("ipairs".into(), Value::RustFunction(ipairs));
+        globals.insert("new_counter".into(), Value::RustFunction(test_new_counter));
 
         ExeState {
             globals,
@@ -642,6 +675,37 @@ impl ExeState {
                     }
                     _ => panic!("xx"),
                 },
+                ByteCode::ForCallLoop(iter, nvar, jmp) => {
+                    // before call:         after call:
+                    //   |           |        |           |     |           |
+                    //   +-----------+        +-----------+     +-----------+
+                    //   | iter func |entry   | iter func |     | iter func |
+                    //   +-----------+        +-----------+     +-----------+
+                    //   | state     |\       | state     |     | state     |
+                    //   +-----------+ 2args  +-----------+     +-----------+
+                    //   | ctrl var  |/       | ctrl var  |     | ctrl var  |<--first return value
+                    //   +-----------+        +-----------+     +-----------+
+                    //   |           |        :           :   ->| return-   |
+                    //                        +-----------+  /  | values    |
+                    //                        | return-   +-/   |           |
+                    //                        | values    |
+                    //                        |           |
+                    let nret = self.call_function(iter, 2+1);
+                    let iret = self.stack.len() - nret;
+
+                    if nret > 0 && self.stack[iret] != Value::Nil {
+                        // set ctrl var
+                        let first_ret = self.stack[iret].clone();
+                        self.set_stack(iter + 2, first_ret);
+
+                        // set return values
+                        self.stack.drain(self.base + iter as usize + 3 .. iret);
+                        self.fill_stack_nil(iter + 3, nvar as usize);
+                        pc -= jmp as usize;
+                    } else if jmp == 0 {
+                        pc += 1;
+                    }
+                }
             }
             pc += 1;
         }
@@ -662,6 +726,7 @@ impl ExeState {
             Value::RustFunction(f) => f(self) as usize,
             Value::LuaFunction(f) => self.execute(&f, &Vec::new()),
             Value::LuaClosure(c) => self.execute(&c.proto, &c.upvalues),
+            Value::RustClosure(c) => c.borrow_mut()(self) as usize,
             f => panic!("invalid function: {f:?}"),
         }
     }

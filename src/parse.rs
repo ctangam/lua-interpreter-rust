@@ -468,7 +468,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
         if *self.ctx.lex.peek() == Token::Assign {
             self.for_numerical(name);
         } else {
-            todo!("generic for")
+            self.for_generic(name);
         }
     }
 
@@ -507,6 +507,56 @@ impl<'a, R: Read> ParseProto<'a, R> {
             .byte_codes
             .push(ByteCode::ForLoop(iname as u8, d as u16));
         self.fp.byte_codes[iprepare] = ByteCode::ForPrepare(iname as u8, d as u16);
+
+        self.pop_loop_block(self.fp.byte_codes.len() - 1);
+    }
+
+    // BNF:
+    //   stat ::= for namelist in explist do block end
+    //   namelist ::= Name {`,` Name}
+    fn for_generic(&mut self, name: String) {
+        // namelist
+        let mut vars = vec![name];
+        loop {
+            match self.ctx.lex.next() {
+                Token::Comma => continue,
+                Token::In => break,
+                Token::Name(name) => vars.push(name),
+                _ => panic!("invalid for generic namelist"),
+            }
+        }
+
+        // explist
+        let iter = self.sp;
+        self.explist_want(3);
+
+        let nvar = vars.len();
+        self.local_new(String::from(""));
+        self.local_new(String::from(""));
+        self.local_new(String::from(""));
+        for var in vars.into_iter() {
+            self.local_new(var);
+        }
+
+        self.ctx.lex.expect(Token::Do);
+
+        self.fp.byte_codes.push(ByteCode::Jump(0));
+        let ijump = self.fp.byte_codes.len() - 1;
+
+        self.push_loop_block();
+
+        assert_eq!(self.block(), Token::End);
+
+        self.local_expire(self.local_num() - 3 - nvar);
+
+        let d = self.fp.byte_codes.len() - ijump;
+        self.fp.byte_codes[ijump] = ByteCode::Jump(d as i16 - 1);
+        if let Ok(d) = u8::try_from(d) {
+            self.fp.byte_codes.push(ByteCode::ForCallLoop(iter as u8, nvar as u8, d as u8));
+        } else {
+            self.fp.byte_codes.push(ByteCode::ForCallLoop(iter as u8, nvar as u8, 0));
+            self.fp.byte_codes.push(ByteCode::Jump(-(d as i16) - 1));
+        }
 
         self.pop_loop_block(self.fp.byte_codes.len() - 1);
     }
@@ -663,6 +713,23 @@ impl<'a, R: Read> ParseProto<'a, R> {
 
             self.discharge(sp0 + n, desc);
             n += 1;
+        }
+    }
+
+    fn explist_want(&mut self, want: usize) {
+        let (nexp, last_exp) = self.explist();
+        match (nexp + 1).cmp(&want) {
+            Ordering::Equal => {
+                self.discharge(self.sp, last_exp);
+            }
+            Ordering::Less => {
+                // expand last expressions
+                self.discharge_expand_want(last_exp, want - nexp);
+            }
+            Ordering::Greater => {
+                // drop extra expressions
+                self.sp -= nexp - want;
+            }
         }
     }
 

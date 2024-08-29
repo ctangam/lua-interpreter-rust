@@ -1,25 +1,25 @@
-g1, g2 = 1, 2
-local up1, up2, up3, up4 = 11, 12, 13, 14
-local print = print
-local function foo()
-    local l1, l2 = 101, 102
-    l1, g1 = g2, l2
-    print(l1, g1)
-
-    -- assign to upvalues
-    up1, up2, up3 = l1, g1, up4
-    print(up1, up2, up3)
-
-    -- assign by upvalues
-    l1, g1, up1 = up2, up3, up4
-    print(l1, g1, up1)
-
-    local inner = function()
-        -- assign to upvalues
-        up1, up2, up3 = 101, g2, up4
-        print(up1, up2, up3)
+local function iter(t, i)
+    i = i + 1
+    local v = t[i]
+    if v then
+        return i, v
     end
-    inner()
 end
 
-foo()
+local function my_ipairs(t)
+    return iter, t, 0
+end
+
+local z = {'hello', 123, 456}
+for i,v in my_ipairs(z) do
+	print(i, v)
+end
+
+for i,v in iter,z,0 do
+	print(i, v)
+end
+
+for i,v in my_ipairs(z) do
+	print(i, v)
+	i = i+1 -- update ctrl-var during loop
+end
