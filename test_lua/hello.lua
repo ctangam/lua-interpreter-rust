@@ -1,25 +1,19 @@
-local function iter(t, i)
-    i = i + 1
-    local v = t[i]
-    if v then
-        return i, v
-    end
+local function my_print(a)
+    print("test _ENV:", a)
 end
 
-local function my_ipairs(t)
-    return iter, t, 0
+-- _ENV as local variable
+local function test_local_env()
+    local _ENV = { print = my_print }
+    print "hello, world!" -- this `print` is my_print
 end
 
-local z = {'hello', 123, 456}
-for i,v in my_ipairs(z) do
-	print(i, v)
+test_local_env()
+
+-- _ENV as upvalue
+local _ENV = { print = my_print }
+local function test_upvalue_env()
+    print "hello, upvalue!" -- this `print` is my_print
 end
 
-for i,v in iter,z,0 do
-	print(i, v)
-end
-
-for i,v in my_ipairs(z) do
-	print(i, v)
-	i = i+1 -- update ctrl-var during loop
-end
+test_upvalue_env()

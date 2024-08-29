@@ -109,22 +109,20 @@ pub struct LuaClosure {
 
 #[derive(Debug)]
 pub struct ExeState {
-    pub globals: HashMap<String, Value>,
     pub stack: Vec<Value>,
     pub base: usize,
 }
 
 impl ExeState {
     pub fn new() -> Self {
-        let mut globals = HashMap::new();
-        globals.insert("print".into(), Value::RustFunction(lib_print));
-        globals.insert("type".into(), Value::RustFunction(lib_type));
-        globals.insert("ipairs".into(), Value::RustFunction(ipairs));
-        globals.insert("new_counter".into(), Value::RustFunction(test_new_counter));
+        let mut env = Table::new(0, 0);
+        env.map.insert("print".into(), Value::RustFunction(lib_print));
+        env.map.insert("type".into(), Value::RustFunction(lib_type));
+        env.map.insert("ipairs".into(), Value::RustFunction(ipairs));
+        env.map.insert("new_counter".into(), Value::RustFunction(test_new_counter));
 
         ExeState {
-            globals,
-            stack: vec![Value::Nil],
+            stack: vec![Value::Nil, Value::Table(Rc::new(RefCell::new(env)))],
             base: 1,
         }
     }
@@ -165,23 +163,6 @@ impl ExeState {
                         .binary_search_by_key(&ilocal, |b| b.ilocal)
                         .unwrap_or_else(|i| i);
                     self.close_brokers(open_brokers.drain(from..));
-                }
-
-                ByteCode::GetGlobal(dst, idx) => {
-                    let key: &str = (&proto.constants[idx as usize]).into();
-                    let v = self.globals.get(key).unwrap_or(&Value::Nil).clone();
-                    self.set_stack(dst, v);
-                }
-                ByteCode::SetGlobal(dst, src) => {
-                    let key = &proto.constants[dst as usize];
-                    let new_value = self.get_stack(src).clone();
-                    self.globals.insert(key.into(), new_value);
-                }
-
-                ByteCode::SetGlobalConst(dst, src) => {
-                    let key = &proto.constants[dst as usize];
-                    let new_value = proto.constants[src as usize].clone();
-                    self.globals.insert(key.into(), new_value);
                 }
 
                 ByteCode::LoadConst(dst, idx) => {
@@ -262,6 +243,24 @@ impl ExeState {
                 ByteCode::GetTable(dst, table, key) => {
                     let key = &self.get_stack(key);
                     let value = self.get_table(table, key);
+                    self.set_stack(dst, value);
+                }
+
+                ByteCode::SetUpField(table, key, value) => {
+                    let key = proto.constants[key as usize].clone();
+                    let value = self.get_stack(value).clone();
+                    upvalues[table as usize].borrow().get(&mut self.stack).new_index(key, value);
+                }
+                ByteCode::SetUpFieldConst(table, key, value) => {
+                    let key = proto.constants[key as usize].clone();
+                    let value = proto.constants[value as usize].clone();
+                    upvalues[table as usize].borrow().get(&self.stack)
+                        .new_index(key, value);
+                }
+                ByteCode::GetUpField(dst, t, k) => {
+                    let key = &proto.constants[k as usize];
+                    let value = upvalues[t as usize].borrow().get(&self.stack)
+                        .index(key).clone();
                     self.set_stack(dst, value);
                 }
 

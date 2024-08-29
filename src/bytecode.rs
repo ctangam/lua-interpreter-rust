@@ -1,9 +1,5 @@
 #[derive(Debug)]
 pub enum ByteCode {
-    GetGlobal(u8, u8),
-    SetGlobal(u8, u8),
-    SetGlobalConst(u8, u8),
-
     GetUpvalue(u8, u8),
     SetUpvalue(u8, u8),
     SetUpvalueConst(u8, u8),
@@ -27,6 +23,10 @@ pub enum ByteCode {
     GetField(u8, u8, u8),
     GetFieldSelf(u8, u8, u8),
     GetInt(u8, u8, u8),
+
+    SetUpField(u8, u8, u8),
+    SetUpFieldConst(u8, u8, u8),
+    GetUpField(u8, u8, u8),
     
     Test(u8, i16),
     Jump(i16),

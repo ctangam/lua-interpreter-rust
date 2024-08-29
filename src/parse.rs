@@ -1,10 +1,10 @@
-use std::{cmp::Ordering, collections::btree_map::Keys, io::Read, rc::Rc};
+use std::{cmp::Ordering, io::Read, rc::Rc};
 
 use crate::{
     bytecode::ByteCode,
     lex::{Lex, Token},
     utils::ftoi,
-    value::{self, Value},
+    value::Value,
 };
 
 #[derive(Debug, PartialEq)]
@@ -17,12 +17,12 @@ enum ExpDesc {
 
     Local(usize), // on stack, including local and temprary variables
     Upvalue(usize),
-    Global(usize), // global variable
 
     IndexField(usize, usize),
     IndexInt(usize, u8),
     Index(usize, usize),
-    // IndexUpField(usize, usize),
+    IndexUpField(usize, usize),
+
     Function(usize),
     Closure(usize),
     Call(usize, usize),
@@ -370,10 +370,10 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let code = match var {
             ExpDesc::Local(i) => ByteCode::Move(i as u8, value as u8),
             ExpDesc::Upvalue(i) => ByteCode::SetUpvalue(i as u8, value as u8),
-            ExpDesc::Global(name) => ByteCode::SetGlobal(name as u8, value as u8),
             ExpDesc::Index(t, key) => ByteCode::SetTable(t as u8, key as u8, value as u8),
             ExpDesc::IndexField(t, key) => ByteCode::SetField(t as u8, key as u8, value as u8),
             ExpDesc::IndexInt(t, key) => ByteCode::SetInt(t as u8, key, value as u8),
+            ExpDesc::IndexUpField(t, key) => ByteCode::SetUpField(t as u8, key as u8, value as u8),
             _ => panic!("assign from stack"),
         };
 
@@ -383,10 +383,10 @@ impl<'a, R: Read> ParseProto<'a, R> {
     fn assign_from_const(&mut self, var: ExpDesc, value: usize) {
         let code = match var {
             ExpDesc::Upvalue(i) => ByteCode::SetUpvalueConst(i as u8, value as u8),
-            ExpDesc::Global(name) => ByteCode::SetGlobalConst(name as u8, value as u8),
             ExpDesc::Index(t, key) => ByteCode::SetTableConst(t as u8, key as u8, value as u8),
             ExpDesc::IndexField(t, key) => ByteCode::SetFieldConst(t as u8, key as u8, value as u8),
             ExpDesc::IndexInt(t, key) => ByteCode::SetIntConst(t as u8, key, value as u8),
+            ExpDesc::IndexUpField(t, key) => ByteCode::SetUpFieldConst(t as u8, key as u8, value as u8),
             _ => panic!("assign from stack"),
         };
 
@@ -861,9 +861,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
                     let key = self.exp();
                     self.ctx.lex.expect(Token::SqurR);
                     desc = match (desc, key) {
-                        // (ExpDesc::Upvalue(itable), ExpDesc::String(key)) => {
-                        //     ExpDesc::IndexUpField(itable, self.add_const(key))
-                        // }
+                        (ExpDesc::Upvalue(itable), ExpDesc::String(key)) => {
+                            ExpDesc::IndexUpField(itable, self.add_const(key))
+                        }
                         (table, key) => {
                             let itable = self.discharge_if_need(sp0, table);
                             match key {
@@ -881,8 +881,14 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 Token::Dot => {
                     self.ctx.lex.next();
                     let name = self.read_name();
-                    let itable = self.discharge_if_need(sp0, desc);
-                    desc = ExpDesc::IndexField(itable, self.add_const(name));
+                    let ikey = self.add_const(name);
+
+                    desc = if let ExpDesc::Upvalue(itable) = desc {
+                        ExpDesc::IndexUpField(itable, ikey)
+                    } else {
+                        let itable = self.discharge_if_need(sp0, desc);
+                        ExpDesc::IndexField(itable, ikey)
+                    };
                 }
                 Token::Colon => {
                     // :Name args
@@ -1000,7 +1006,12 @@ impl<'a, R: Read> ParseProto<'a, R> {
             }
         }
 
-        ExpDesc::Global(self.add_const(name))
+        let iname = self.add_const(name);
+        match self.simple_name("_ENV".into()) {
+            ExpDesc::Local(i) => ExpDesc::IndexField(i, iname),
+            ExpDesc::Upvalue(i) => ExpDesc::IndexUpField(i, iname),
+            _ => panic!("no here"),
+        }
     }
 
     fn create_upvalue(&mut self, name: &str, mut upidx: UpIndex, depth: usize) -> ExpDesc {
@@ -1208,13 +1219,13 @@ impl<'a, R: Read> ParseProto<'a, R> {
                 }
             }
             ExpDesc::Upvalue(src) => ByteCode::GetUpvalue(dst as u8, src as u8),
-            ExpDesc::Global(i) => ByteCode::GetGlobal(dst as u8, i as u8),
 
             ExpDesc::IndexField(itable, ikey) => {
                 ByteCode::GetField(dst as u8, itable as u8, ikey as u8)
             }
             ExpDesc::IndexInt(itable, ikey) => ByteCode::GetInt(dst as u8, itable as u8, ikey),
             ExpDesc::Index(itable, ikey) => ByteCode::GetTable(dst as u8, itable as u8, ikey as u8),
+            ExpDesc::IndexUpField(itable, ikey) => ByteCode::GetUpField(dst as u8, itable as u8, ikey as u8),
 
             ExpDesc::Vargs => ByteCode::Vargs(dst as u8, 1),
             ExpDesc::Function(f) => ByteCode::LoadConst(dst as u8, f as u16),
@@ -1468,7 +1479,7 @@ pub fn load(input: impl Read) -> FuncProto {
         lex: Lex::new(input),
         levels: Default::default(),
     };
-    chunk(&mut ctx, false, Vec::new(), Token::Eos)
+    chunk(&mut ctx, false, vec!["_ENV".into()], Token::Eos)
 }
 
 fn chunk(
