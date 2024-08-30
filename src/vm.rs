@@ -1,5 +1,13 @@
 use std::{
-    arch::x86_64::_SIDD_NEGATIVE_POLARITY, cell::RefCell, cmp::Ordering, collections::HashMap, env::var, fmt::DebugStruct, io::{Read, Write}, iter, rc::Rc
+    arch::x86_64::_SIDD_NEGATIVE_POLARITY,
+    cell::RefCell,
+    cmp::Ordering,
+    collections::HashMap,
+    env::var,
+    fmt::DebugStruct,
+    io::{Read, Write},
+    iter,
+    rc::Rc,
 };
 
 use crate::{
@@ -116,10 +124,12 @@ pub struct ExeState {
 impl ExeState {
     pub fn new() -> Self {
         let mut env = Table::new(0, 0);
-        env.map.insert("print".into(), Value::RustFunction(lib_print));
+        env.map
+            .insert("print".into(), Value::RustFunction(lib_print));
         env.map.insert("type".into(), Value::RustFunction(lib_type));
         env.map.insert("ipairs".into(), Value::RustFunction(ipairs));
-        env.map.insert("new_counter".into(), Value::RustFunction(test_new_counter));
+        env.map
+            .insert("new_counter".into(), Value::RustFunction(test_new_counter));
 
         ExeState {
             stack: vec![Value::Nil, Value::Table(Rc::new(RefCell::new(env)))],
@@ -128,6 +138,7 @@ impl ExeState {
     }
 
     pub fn execute(&mut self, proto: &FuncProto, upvalues: &Vec<Rc<RefCell<Upvalue>>>) -> usize {
+        println!("upvalues: {:?}", upvalues);
         let mut open_brokers: Vec<OpenBroker> = Vec::new();
 
         // fill nil if #argument < #parameter
@@ -249,18 +260,26 @@ impl ExeState {
                 ByteCode::SetUpField(table, key, value) => {
                     let key = proto.constants[key as usize].clone();
                     let value = self.get_stack(value).clone();
-                    upvalues[table as usize].borrow().get(&mut self.stack).new_index(key, value);
+                    upvalues[table as usize]
+                        .borrow()
+                        .get(&mut self.stack)
+                        .new_index(key, value);
                 }
                 ByteCode::SetUpFieldConst(table, key, value) => {
                     let key = proto.constants[key as usize].clone();
                     let value = proto.constants[value as usize].clone();
-                    upvalues[table as usize].borrow().get(&self.stack)
+                    upvalues[table as usize]
+                        .borrow()
+                        .get(&self.stack)
                         .new_index(key, value);
                 }
                 ByteCode::GetUpField(dst, t, k) => {
                     let key = &proto.constants[k as usize];
-                    let value = upvalues[t as usize].borrow().get(&self.stack)
-                        .index(key).clone();
+                    let value = upvalues[t as usize]
+                        .borrow()
+                        .get(&self.stack)
+                        .index(key)
+                        .clone();
                     self.set_stack(dst, value);
                 }
 
@@ -689,7 +708,7 @@ impl ExeState {
                     //                        | return-   +-/   |           |
                     //                        | values    |
                     //                        |           |
-                    let nret = self.call_function(iter, 2+1);
+                    let nret = self.call_function(iter, 2 + 1);
                     let iret = self.stack.len() - nret;
 
                     if nret > 0 && self.stack[iret] != Value::Nil {
@@ -698,7 +717,7 @@ impl ExeState {
                         self.set_stack(iter + 2, first_ret);
 
                         // set return values
-                        self.stack.drain(self.base + iter as usize + 3 .. iret);
+                        self.stack.drain(self.base + iter as usize + 3..iret);
                         self.fill_stack_nil(iter + 3, nvar as usize);
                         pc -= jmp as usize;
                     } else if jmp == 0 {

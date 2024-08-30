@@ -104,6 +104,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
     fn block(&mut self) -> Token {
         let nvar = self.local_num();
         let end_token = self.block_scope();
+        println!("locals: {:?}", self.ctx.levels.last().unwrap().locals);
         self.local_expire(nvar);
         end_token
     }
@@ -117,11 +118,14 @@ impl<'a, R: Read> ParseProto<'a, R> {
             match self.ctx.lex.next() {
                 Token::SemiColon => (),
 
+                // func or assign
                 t @ Token::Name(_) | t @ Token::ParL => {
                     if self.try_continue_stat(&t) {
                         continue;
                     }
 
+                    // functioncall and var-assignment both begin with
+                    // `prefixexp` which begins with `Name` or `(`.
                     let desc = self.prefixexp(t);
                     if let ExpDesc::Call(ifunc, narg_plus) = desc {
                         self.fp
@@ -266,7 +270,7 @@ impl<'a, R: Read> ParseProto<'a, R> {
         }
 
         let proto = chunk(self.ctx, has_vargs, params, Token::End);
-        
+
         let no_upvalue = proto.upindexes.is_empty();
         let iconst = self.add_const(Value::LuaFunction(Rc::new(proto)));
         if no_upvalue {
@@ -386,8 +390,10 @@ impl<'a, R: Read> ParseProto<'a, R> {
             ExpDesc::Index(t, key) => ByteCode::SetTableConst(t as u8, key as u8, value as u8),
             ExpDesc::IndexField(t, key) => ByteCode::SetFieldConst(t as u8, key as u8, value as u8),
             ExpDesc::IndexInt(t, key) => ByteCode::SetIntConst(t as u8, key, value as u8),
-            ExpDesc::IndexUpField(t, key) => ByteCode::SetUpFieldConst(t as u8, key as u8, value as u8),
-            _ => panic!("assign from stack"),
+            ExpDesc::IndexUpField(t, key) => {
+                ByteCode::SetUpFieldConst(t as u8, key as u8, value as u8)
+            }
+            _ => panic!("assign from const"),
         };
 
         self.fp.byte_codes.push(code);
@@ -552,9 +558,13 @@ impl<'a, R: Read> ParseProto<'a, R> {
         let d = self.fp.byte_codes.len() - ijump;
         self.fp.byte_codes[ijump] = ByteCode::Jump(d as i16 - 1);
         if let Ok(d) = u8::try_from(d) {
-            self.fp.byte_codes.push(ByteCode::ForCallLoop(iter as u8, nvar as u8, d as u8));
+            self.fp
+                .byte_codes
+                .push(ByteCode::ForCallLoop(iter as u8, nvar as u8, d as u8));
         } else {
-            self.fp.byte_codes.push(ByteCode::ForCallLoop(iter as u8, nvar as u8, 0));
+            self.fp
+                .byte_codes
+                .push(ByteCode::ForCallLoop(iter as u8, nvar as u8, 0));
             self.fp.byte_codes.push(ByteCode::Jump(-(d as i16) - 1));
         }
 
@@ -1225,7 +1235,9 @@ impl<'a, R: Read> ParseProto<'a, R> {
             }
             ExpDesc::IndexInt(itable, ikey) => ByteCode::GetInt(dst as u8, itable as u8, ikey),
             ExpDesc::Index(itable, ikey) => ByteCode::GetTable(dst as u8, itable as u8, ikey as u8),
-            ExpDesc::IndexUpField(itable, ikey) => ByteCode::GetUpField(dst as u8, itable as u8, ikey as u8),
+            ExpDesc::IndexUpField(itable, ikey) => {
+                ByteCode::GetUpField(dst as u8, itable as u8, ikey as u8)
+            }
 
             ExpDesc::Vargs => ByteCode::Vargs(dst as u8, 1),
             ExpDesc::Function(f) => ByteCode::LoadConst(dst as u8, f as u16),
